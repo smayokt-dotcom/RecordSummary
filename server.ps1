@@ -21,7 +21,7 @@ while ($listener.IsListening) {
         }
         $bytes = [System.IO.File]::ReadAllBytes($file)
         $ctx.Response.ContentType = $mime
-        $ctx.Response.ContentLength64 = $bytes.Length
+        $ctx.Response.SendChunked = $true
         $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
     } else {
         $ctx.Response.StatusCode = 404

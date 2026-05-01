@@ -106,9 +106,9 @@ const S = {
   meetings: [],
   currentMeeting: null,
   rec: {
-    active: false, segments: [], interim: '',
-    recognition: null, keepAlive: true,
-    elapsed: 0, timer: null
+    active: false, processing: false, segments: [],
+    stream: null, mediaRecorder: null, audioBuffer: [],
+    elapsed: 0, timer: null, chunkTimer: null, chunkStartTime: 0
   },
   generating: false,
   streamText: '',
@@ -169,9 +169,9 @@ function vHome() {
 // ── View: Record ─────────────────────────────────────────────────────────────
 function vRecord() {
   const rec = S.rec;
-  const fullText = [...rec.segments, rec.interim].join(' ').trim();
-  const wordCount = fullText ? fullText.split(/\s+/).filter(Boolean).length : 0;
-  const supported = 'webkitSpeechRecognition' in window || 'SpeechRecognition' in window;
+  const charCount = rec.segments.join('').length;
+  const chunkSec = parseInt(localStorage.getItem('chunkInterval') || '60');
+  const statusText = rec.processing ? '処理中…' : rec.active ? '録音中' : '停止中';
 
   return `
     <header class="app-header">
@@ -180,26 +180,29 @@ function vRecord() {
       <div style="min-width:36px"></div>
     </header>
     <main class="main-content">
-      ${!supported ? `<div class="error-banner">⚠ このブラウザはSpeech APIに未対応です。Chrome / Edge をお使いください。</div>` : ''}
       <div class="record-status">
-        <div class="status-dot${rec.active ? ' recording' : ''}"></div>
-        <span class="status-text">${rec.active ? '録音中' : '停止中'}</span>
-        ${rec.active ? `<span class="elapsed" id="elapsedDisplay">${fmtElapsed(rec.elapsed)}</span>` : ''}
+        <div class="status-dot${rec.active ? ' recording' : ''}${rec.processing ? ' processing' : ''}"></div>
+        <span class="status-text">${statusText}</span>
+        <span style="margin-left:auto;display:flex;gap:10px;align-items:center">
+          ${rec.active ? `<span class="chunk-cd" id="chunkCountdown">−</span>` : ''}
+          ${rec.active ? `<span class="elapsed" id="elapsedDisplay">${fmtElapsed(rec.elapsed)}</span>` : ''}
+        </span>
       </div>
       <div class="transcript-box">
         <div class="transcript-label">
-          文字起こし
-          <span class="word-count" id="wordCountDisplay">${wordCount} 語</span>
+          文字起こし（Gemini Audio）
+          <span class="word-count" id="wordCountDisplay">${charCount} 文字</span>
         </div>
         <div class="transcript-content" id="transcriptContent">
-          ${rec.segments.map(s => `<span class="segment">${esc(s)} </span>`).join('')}
-          ${rec.interim ? `<span class="interim">${esc(rec.interim)}</span>` : ''}
+          ${rec.segments.map(s => `<div class="segment-block">${esc(s)}</div>`).join('')}
+          ${rec.processing ? '<div class="processing-indicator">⏳ Gemini で文字起こし処理中…</div>' : ''}
+          ${!rec.segments.length && !rec.processing ? `<div class="transcript-empty">録音を開始すると ${chunkSec} 秒ごとに文字起こし結果が表示されます</div>` : ''}
         </div>
       </div>
       <div class="record-controls">
         ${rec.active
           ? `<button class="btn btn-danger btn-large js-stop">⏹&ensp;録音停止</button>`
-          : `<button class="btn btn-primary btn-large js-start"${!supported ? ' disabled' : ''}>🎙&ensp;録音開始</button>
+          : `<button class="btn btn-primary btn-large js-start">🎙&ensp;録音開始</button>
              ${rec.segments.length ? `<button class="btn btn-secondary btn-large js-generate-now">📝&ensp;議事録を生成</button>` : ''}`
         }
       </div>
@@ -321,7 +324,18 @@ function vSettings() {
       </div>
 
       <div class="settings-section">
-        <div class="settings-label">音声認識言語</div>
+        <div class="settings-label">文字起こし間隔</div>
+        <select id="intervalSelect" class="input">
+          ${[['30','30秒（高頻度）'],['60','1分（標準）'],['120','2分'],['300','5分']].map(
+            ([v,l]) => `<option value="${v}"${(localStorage.getItem('chunkInterval')||'60')===v?' selected':''}>${l}</option>`
+          ).join('')}
+        </select>
+        <div class="settings-hint">短いほどリアルタイムに近くなりますが、APIコール数が増えます</div>
+        <button class="btn btn-primary js-save-interval" style="width:auto">保存</button>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-label">文字起こし言語</div>
         <select id="langSelect" class="input">
           ${langs.map(([v,l]) => `<option value="${v}"${v === lang ? ' selected' : ''}>${l}</option>`).join('')}
         </select>
@@ -399,6 +413,12 @@ function bind() {
     if (!val) return;
     localStorage.setItem('speechLang', val);
     toast('言語設定を保存しました');
+  });
+  on('.js-save-interval', 'click', () => {
+    const val = document.getElementById('intervalSelect')?.value;
+    if (!val) return;
+    localStorage.setItem('chunkInterval', val);
+    toast('間隔を保存しました');
   });
   on('.js-clear-data', 'click', async () => {
     if (!confirm('全てのデータを削除しますか？この操作は取り消せません。')) return;
@@ -550,77 +570,157 @@ async function createMeeting(title) {
   go('record');
 }
 
-// ── Speech Recognition ───────────────────────────────────────────────────────
-function startRecording() {
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const rec = S.rec;
+// ── MediaRecorder + Gemini Audio ─────────────────────────────────────────────
+let processingQueue = Promise.resolve();
 
+function getSupportedMimeType() {
+  return ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4']
+    .find(t => MediaRecorder.isTypeSupported(t)) || '';
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function transcribeAudio(base64, mimeType) {
+  const apiKey = localStorage.getItem('geminiApiKey');
+  if (!apiKey) throw new Error('APIキーが設定されていません');
+  const model = localStorage.getItem('geminiModel') || 'gemini-2.0-flash';
+  const lang = localStorage.getItem('speechLang') || 'ja-JP';
+  const langName = { 'ja-JP':'日本語','en-US':'英語','en-GB':'英語','zh-CN':'中国語','ko-KR':'韓国語' }[lang] || '日本語';
+  const ctx = S.rec.segments.slice(-2).join('').slice(-300);
+  const prompt = `この音声を${langName}で正確に文字起こしして。${ctx ? `直前の文脈:「…${ctx}」` : ''}
+話し言葉そのままで、句読点を適切に追加。複数話者もそのまま書き起こす。
+文字起こしテキストのみ出力すること。`;
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [
+          { inline_data: { mime_type: mimeType, data: base64 } },
+          { text: prompt }
+        ]}],
+        generationConfig: { maxOutputTokens: 2048 }
+      })
+    }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error?.message || `HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+}
+
+async function processChunk() {
+  const rec = S.rec;
+  if (!rec.audioBuffer.length) return;
+  const chunks = [...rec.audioBuffer];
+  rec.audioBuffer = [];
+  rec.chunkStartTime = Date.now();
+
+  const mimeType = (rec.mediaRecorder?.mimeType || 'audio/webm').split(';')[0];
+  const blob = new Blob(chunks, { type: mimeType });
+  if (blob.size < 2000) return;
+
+  rec.processing = true;
+  updateTranscriptUI();
+
+  processingQueue = processingQueue.then(async () => {
+    try {
+      const base64 = await blobToBase64(blob);
+      const text = await transcribeAudio(base64, mimeType);
+      if (text) { rec.segments.push(text); autoSave(); }
+    } catch (e) {
+      console.error('Transcription error:', e);
+    } finally {
+      rec.processing = false;
+      updateTranscriptUI();
+    }
+  });
+}
+
+async function startRecording() {
+  if (!localStorage.getItem('geminiApiKey')) {
+    alert('先に設定画面でGemini APIキーを設定してください。');
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true }
+    });
+  } catch (e) {
+    alert(e.name === 'NotAllowedError'
+      ? 'マイクへのアクセスが拒否されました。ブラウザの設定を確認してください。'
+      : `マイクエラー: ${e.message}`);
+    return;
+  }
+
+  const rec = S.rec;
   rec.active = true;
-  rec.keepAlive = true;
+  rec.stream = stream;
+  rec.audioBuffer = [];
+  rec.chunkStartTime = Date.now();
+  rec.elapsed = 0;
+
+  const mimeType = getSupportedMimeType();
+  const mr = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+  rec.mediaRecorder = mr;
+  mr.ondataavailable = e => { if (e.data.size > 0) rec.audioBuffer.push(e.data); };
+  mr.start(1000);
+
+  const chunkMs = parseInt(localStorage.getItem('chunkInterval') || '60') * 1000;
+  rec.chunkTimer = setInterval(processChunk, chunkMs);
+
   rec.timer = setInterval(() => {
     rec.elapsed++;
     const el = document.getElementById('elapsedDisplay');
     if (el) el.textContent = fmtElapsed(rec.elapsed);
+    const remaining = Math.max(0, Math.round(chunkMs / 1000 - (Date.now() - rec.chunkStartTime) / 1000));
+    const cd = document.getElementById('chunkCountdown');
+    if (cd) cd.textContent = `${remaining}秒後に処理`;
   }, 1000);
 
-  const r = new SpeechRecognition();
-  r.continuous = true;
-  r.interimResults = true;
-  r.lang = localStorage.getItem('speechLang') || 'ja-JP';
-  r.maxAlternatives = 1;
-
-  r.onresult = e => {
-    let interim = '';
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      if (e.results[i].isFinal) {
-        const txt = e.results[i][0].transcript.trim();
-        if (txt) { rec.segments.push(txt); autoSave(); }
-        rec.interim = '';
-      } else {
-        interim += e.results[i][0].transcript;
-      }
-    }
-    rec.interim = interim;
-    updateTranscriptUI();
-  };
-
-  r.onerror = e => {
-    if (e.error === 'no-speech') return;
-    if (e.error === 'not-allowed') {
-      alert('マイクへのアクセスが拒否されました。ブラウザの設定を確認してください。');
-      stopRecording();
-    }
-  };
-
-  r.onend = () => {
-    if (rec.keepAlive && rec.active) {
-      setTimeout(() => { try { r.start(); } catch(_) {} }, 200);
-    }
-  };
-
-  rec.recognition = r;
-  r.start();
   render();
 }
 
 function stopRecording() {
   const rec = S.rec;
   rec.active = false;
-  rec.keepAlive = false;
   clearInterval(rec.timer);
+  clearInterval(rec.chunkTimer);
   rec.timer = null;
+  rec.chunkTimer = null;
 
-  try { rec.recognition?.stop(); } catch(_) {}
-  rec.recognition = null;
+  const finish = async () => {
+    if (rec.mediaRecorder && rec.mediaRecorder.state !== 'inactive') {
+      await new Promise(resolve => {
+        rec.mediaRecorder.addEventListener('stop', resolve, { once: true });
+        rec.mediaRecorder.stop();
+      });
+    }
+    if (rec.stream) { rec.stream.getTracks().forEach(t => t.stop()); rec.stream = null; }
+    await processChunk();
+    await processingQueue;
+    if (S.currentMeeting) {
+      S.currentMeeting.endTime = new Date().toISOString();
+      S.currentMeeting.transcript = [...rec.segments];
+      await putMeeting(S.currentMeeting);
+    }
+    render();
+  };
 
-  if (rec.interim.trim()) { rec.segments.push(rec.interim.trim()); rec.interim = ''; }
-
-  if (S.currentMeeting) {
-    S.currentMeeting.endTime = new Date().toISOString();
-    S.currentMeeting.transcript = [...rec.segments];
-    putMeeting(S.currentMeeting);
-  }
   render();
+  finish().catch(console.error);
 }
 
 function updateTranscriptUI() {
@@ -628,15 +728,12 @@ function updateTranscriptUI() {
   if (!container) return;
   const rec = S.rec;
   container.innerHTML =
-    rec.segments.map(s => `<span class="segment">${esc(s)} </span>`).join('') +
-    (rec.interim ? `<span class="interim">${esc(rec.interim)}</span>` : '');
+    rec.segments.map(s => `<div class="segment-block">${esc(s)}</div>`).join('') +
+    (rec.processing ? '<div class="processing-indicator">⏳ Gemini で文字起こし処理中…</div>' : '') +
+    (!rec.segments.length && !rec.processing ? `<div class="transcript-empty">録音を開始すると ${parseInt(localStorage.getItem('chunkInterval')||'60')} 秒ごとに文字起こし結果が表示されます</div>` : '');
   container.scrollTop = container.scrollHeight;
-
   const wc = document.getElementById('wordCountDisplay');
-  if (wc) {
-    const n = [...rec.segments, rec.interim].join(' ').split(/\s+/).filter(Boolean).length;
-    wc.textContent = `${n} 語`;
-  }
+  if (wc) wc.textContent = `${rec.segments.join('').length} 文字`;
 }
 
 async function autoSave() {
