@@ -1,4 +1,4 @@
-const CACHE_NAME = 'minutes-maker-v2';
+const CACHE_NAME = 'minutes-maker-v3';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './manifest.json', './icons/icon.svg'];
 
 self.addEventListener('install', e => {

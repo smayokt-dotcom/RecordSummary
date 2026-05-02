@@ -108,7 +108,8 @@ const S = {
   rec: {
     active: false, processing: false, segments: [],
     stream: null, mediaRecorder: null, audioBuffer: [],
-    elapsed: 0, timer: null, chunkTimer: null, chunkStartTime: 0
+    elapsed: 0, timer: null, chunkTimer: null, chunkStartTime: 0,
+    audioContext: null
   },
   generating: false,
   streamText: '',
@@ -335,6 +336,17 @@ function vSettings() {
       </div>
 
       <div class="settings-section">
+        <div class="settings-label">マイク感度（ゲイン増幅）</div>
+        <select id="gainSelect" class="input">
+          ${[['1','×1（標準）'],['2','×2'],['3','×3（推奨）'],['4','×4'],['5','×5（最大）']].map(
+            ([v,l]) => `<option value="${v}"${(localStorage.getItem('micGain')||'3')===v?' selected':''}>${l}</option>`
+          ).join('')}
+        </select>
+        <div class="settings-hint">会議室など声が遠い環境では ×3〜×5 を推奨。増幅しすぎると音割れするので調整してください。</div>
+        <button class="btn btn-primary js-save-gain" style="width:auto">保存</button>
+      </div>
+
+      <div class="settings-section">
         <div class="settings-label">文字起こし言語</div>
         <select id="langSelect" class="input">
           ${langs.map(([v,l]) => `<option value="${v}"${v === lang ? ' selected' : ''}>${l}</option>`).join('')}
@@ -419,6 +431,12 @@ function bind() {
     if (!val) return;
     localStorage.setItem('chunkInterval', val);
     toast('間隔を保存しました');
+  });
+  on('.js-save-gain', 'click', () => {
+    const val = document.getElementById('gainSelect')?.value;
+    if (!val) return;
+    localStorage.setItem('micGain', val);
+    toast('感度設定を保存しました');
   });
   on('.js-clear-data', 'click', async () => {
     if (!confirm('全てのデータを削除しますか？この操作は取り消せません。')) return;
@@ -566,7 +584,7 @@ async function createMeeting(title) {
   await putMeeting(meeting);
   S.currentMeeting = meeting;
   S.meetings = [meeting, ...S.meetings];
-  S.rec = { active: false, segments: [], interim: '', recognition: null, keepAlive: true, elapsed: 0, timer: null };
+  S.rec = { active: false, processing: false, segments: [], stream: null, mediaRecorder: null, audioBuffer: [], elapsed: 0, timer: null, chunkTimer: null, chunkStartTime: 0, audioContext: null };
   go('record');
 }
 
@@ -656,7 +674,7 @@ async function startRecording() {
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true }
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true }
     });
   } catch (e) {
     alert(e.name === 'NotAllowedError'
@@ -672,8 +690,32 @@ async function startRecording() {
   rec.chunkStartTime = Date.now();
   rec.elapsed = 0;
 
+  // ② Web Audio API GainNode で増幅してからMediaRecorderへ渡す
+  const gainValue = parseFloat(localStorage.getItem('micGain') || '3');
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  let recordingStream = stream;
+  if (AudioCtx) {
+    try {
+      const audioCtx = new AudioCtx();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const gainNode = audioCtx.createGain();
+      gainNode.gain.value = gainValue;
+      const dest = audioCtx.createMediaStreamDestination();
+      source.connect(gainNode);
+      gainNode.connect(dest);
+      rec.audioContext = audioCtx;
+      recordingStream = dest.stream;
+    } catch (e) {
+      console.warn('GainNode setup failed, using raw stream:', e);
+    }
+  }
+
   const mimeType = getSupportedMimeType();
-  const mr = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+  // ③ ビットレートを明示指定（128kbps）
+  const mrOptions = mimeType
+    ? { mimeType, audioBitsPerSecond: 128000 }
+    : { audioBitsPerSecond: 128000 };
+  const mr = new MediaRecorder(recordingStream, mrOptions);
   rec.mediaRecorder = mr;
   mr.ondataavailable = e => { if (e.data.size > 0) rec.audioBuffer.push(e.data); };
   mr.start(1000);
@@ -709,6 +751,7 @@ function stopRecording() {
       });
     }
     if (rec.stream) { rec.stream.getTracks().forEach(t => t.stop()); rec.stream = null; }
+    if (rec.audioContext) { rec.audioContext.close().catch(() => {}); rec.audioContext = null; }
     await processChunk();
     await processingQueue;
     if (S.currentMeeting) {
