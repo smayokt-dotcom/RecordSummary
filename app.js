@@ -336,6 +336,16 @@ function vSettings() {
       </div>
 
       <div class="settings-section">
+        <div class="settings-label">話者切り分け</div>
+        <select id="diarizeSelect" class="input">
+          <option value="false"${(localStorage.getItem('speakerDiarization')||'false')==='false'?' selected':''}>オフ</option>
+          <option value="true"${localStorage.getItem('speakerDiarization')==='true'?' selected':''}>オン（話者A / 話者B … でラベル付け）</option>
+        </select>
+        <div class="settings-hint">Geminiが声の違いを検出し「話者A:」「話者B:」のラベルを付けます。前チャンクの話者ラベルを引き継いで一貫性を保ちます。</div>
+        <button class="btn btn-primary js-save-diarize" style="width:auto">保存</button>
+      </div>
+
+      <div class="settings-section">
         <div class="settings-label">マイク感度（ゲイン増幅）</div>
         <select id="gainSelect" class="input">
           ${[['1','×1（標準）'],['2','×2'],['3','×3（推奨）'],['4','×4'],['5','×5（最大）']].map(
@@ -344,6 +354,39 @@ function vSettings() {
         </select>
         <div class="settings-hint">会議室など声が遠い環境では ×3〜×5 を推奨。増幅しすぎると音割れするので調整してください。</div>
         <button class="btn btn-primary js-save-gain" style="width:auto">保存</button>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-label">オーディオフィルター</div>
+        <select id="filterPresetSelect" class="input">
+          ${[['off','オフ'],['standard','標準（100Hz〜8kHz）'],['conference','会議室（200Hz〜6kHz）'],['phone','電話品質（300Hz〜3.4kHz）'],['custom','カスタム']].map(
+            ([v,l]) => `<option value="${v}"${(localStorage.getItem('filterPreset')||'off')===v?' selected':''}>${l}</option>`
+          ).join('')}
+        </select>
+        <div id="customFilterInputs" style="display:${(localStorage.getItem('filterPreset')||'off')==='custom'?'flex':'none'};flex-direction:column;gap:8px;margin-top:8px">
+          <div style="display:flex;gap:8px;align-items:center">
+            <span style="font-size:13px;color:var(--text-muted);min-width:72px">ハイパス</span>
+            <input type="number" id="highpassInput" class="input" placeholder="100" min="20" max="2000" value="${esc(localStorage.getItem('highpassFreq')||'100')}" style="flex:1">
+            <span style="font-size:13px;color:var(--text-muted)">Hz</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span style="font-size:13px;color:var(--text-muted);min-width:72px">ローパス</span>
+            <input type="number" id="lowpassInput" class="input" placeholder="8000" min="1000" max="20000" value="${esc(localStorage.getItem('lowpassFreq')||'8000')}" style="flex:1">
+            <span style="font-size:13px;color:var(--text-muted)">Hz</span>
+          </div>
+        </div>
+        <div class="settings-hint">エアコン・低音ノイズはハイパスで、高音ノイズはローパスでカット。次の録音から適用されます。</div>
+        <button class="btn btn-primary js-save-filter" style="width:auto">保存</button>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-label">ダイナミクスコンプレッサー</div>
+        <select id="compressorSelect" class="input">
+          <option value="false"${(localStorage.getItem('compressor')||'false')==='false'?' selected':''}>オフ</option>
+          <option value="true"${localStorage.getItem('compressor')==='true'?' selected':''}>オン（音量ムラを均一化）</option>
+        </select>
+        <div class="settings-hint">遠い声と近い声の音量差を均一化します。会議室での使用に効果的です。</div>
+        <button class="btn btn-primary js-save-compressor" style="width:auto">保存</button>
       </div>
 
       <div class="settings-section">
@@ -361,7 +404,7 @@ function vSettings() {
 
       <div class="settings-section app-info">
         <div>議事録メーカー v1.0</div>
-        <div class="settings-hint">文字起こし: Web Speech API（Chrome/Edge）<br>議事録生成: Gemini API</div>
+        <div class="settings-hint">文字起こし: Gemini Audio API<br>議事録生成: Gemini API</div>
       </div>
     </main>
   `;
@@ -437,6 +480,36 @@ function bind() {
     if (!val) return;
     localStorage.setItem('micGain', val);
     toast('感度設定を保存しました');
+  });
+  on('.js-save-diarize', 'click', () => {
+    const val = document.getElementById('diarizeSelect')?.value;
+    if (val == null) return;
+    localStorage.setItem('speakerDiarization', val);
+    toast('話者切り分け設定を保存しました');
+  });
+  // フィルタープリセット変更 → カスタム入力欄の表示切り替え
+  on('#filterPresetSelect', 'change', () => {
+    const val = document.getElementById('filterPresetSelect')?.value;
+    const el = document.getElementById('customFilterInputs');
+    if (el) el.style.display = val === 'custom' ? 'flex' : 'none';
+  });
+  on('.js-save-filter', 'click', () => {
+    const preset = document.getElementById('filterPresetSelect')?.value;
+    if (!preset) return;
+    localStorage.setItem('filterPreset', preset);
+    if (preset === 'custom') {
+      const hp = document.getElementById('highpassInput')?.value;
+      const lp = document.getElementById('lowpassInput')?.value;
+      if (hp) localStorage.setItem('highpassFreq', hp);
+      if (lp) localStorage.setItem('lowpassFreq', lp);
+    }
+    toast('フィルター設定を保存しました');
+  });
+  on('.js-save-compressor', 'click', () => {
+    const val = document.getElementById('compressorSelect')?.value;
+    if (val == null) return;
+    localStorage.setItem('compressor', val);
+    toast('コンプレッサー設定を保存しました');
   });
   on('.js-clear-data', 'click', async () => {
     if (!confirm('全てのデータを削除しますか？この操作は取り消せません。')) return;
@@ -591,6 +664,50 @@ async function createMeeting(title) {
 // ── MediaRecorder + Gemini Audio ─────────────────────────────────────────────
 let processingQueue = Promise.resolve();
 
+// Audio processing chain: Gain → [Highpass] → [Lowpass] → [Compressor] → dest
+function buildAudioChain(audioCtx, source) {
+  const nodes = [];
+
+  // Gain
+  const gain = audioCtx.createGain();
+  gain.gain.value = parseFloat(localStorage.getItem('micGain') || '3');
+  nodes.push(gain);
+
+  // Filter (highpass + lowpass)
+  const preset = localStorage.getItem('filterPreset') || 'off';
+  if (preset !== 'off') {
+    let hp, lp;
+    if      (preset === 'standard')   { hp = 100; lp = 8000; }
+    else if (preset === 'conference') { hp = 200; lp = 6000; }
+    else if (preset === 'phone')      { hp = 300; lp = 3400; }
+    else { // custom
+      hp = parseFloat(localStorage.getItem('highpassFreq') || '100');
+      lp = parseFloat(localStorage.getItem('lowpassFreq') || '8000');
+    }
+    const hpf = audioCtx.createBiquadFilter();
+    hpf.type = 'highpass'; hpf.frequency.value = hp; hpf.Q.value = 0.7;
+    nodes.push(hpf);
+    const lpf = audioCtx.createBiquadFilter();
+    lpf.type = 'lowpass'; lpf.frequency.value = lp; lpf.Q.value = 0.7;
+    nodes.push(lpf);
+  }
+
+  // Compressor
+  if (localStorage.getItem('compressor') === 'true') {
+    const comp = audioCtx.createDynamicsCompressor();
+    comp.threshold.value = -24; comp.knee.value = 30;
+    comp.ratio.value = 12; comp.attack.value = 0.003; comp.release.value = 0.25;
+    nodes.push(comp);
+  }
+
+  // Chain: source → node[0] → … → node[n] → dest
+  source.connect(nodes[0]);
+  for (let i = 0; i < nodes.length - 1; i++) nodes[i].connect(nodes[i + 1]);
+  const dest = audioCtx.createMediaStreamDestination();
+  nodes[nodes.length - 1].connect(dest);
+  return dest;
+}
+
 function getSupportedMimeType() {
   return ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4']
     .find(t => MediaRecorder.isTypeSupported(t)) || '';
@@ -611,10 +728,24 @@ async function transcribeAudio(base64, mimeType) {
   const model = localStorage.getItem('geminiModel') || 'gemini-2.0-flash';
   const lang = localStorage.getItem('speechLang') || 'ja-JP';
   const langName = { 'ja-JP':'日本語','en-US':'英語','en-GB':'英語','zh-CN':'中国語','ko-KR':'韓国語' }[lang] || '日本語';
-  const ctx = S.rec.segments.slice(-2).join('').slice(-300);
-  const prompt = `この音声を${langName}で正確に文字起こしして。${ctx ? `直前の文脈:「…${ctx}」` : ''}
+  const diarize = localStorage.getItem('speakerDiarization') === 'true';
+  // 直前チャンクの末尾をコンテキストとして渡す（話者ラベルの一貫性確保に使用）
+  const ctx = S.rec.segments.slice(-2).join('').slice(-400);
+
+  let prompt;
+  if (diarize) {
+    prompt = `この音声を${langName}で、話者ごとにラベルを付けて文字起こしして。
+各発言の先頭に「話者A:」「話者B:」のようにラベルを付けること。
+${ctx
+  ? `直前の文脈（ここに登場した話者ラベルを必ず引き継いで一貫性を保つこと）:\n「…${ctx}」`
+  : '初めて登場する話者から順に話者A・話者B・話者Cと割り当てること。'}
+話し言葉そのままで、句読点を適切に追加。
+文字起こしテキストのみ出力すること。`;
+  } else {
+    prompt = `この音声を${langName}で正確に文字起こしして。${ctx ? `直前の文脈:「…${ctx}」` : ''}
 話し言葉そのままで、句読点を適切に追加。複数話者もそのまま書き起こす。
 文字起こしテキストのみ出力すること。`;
+  }
 
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
@@ -690,23 +821,18 @@ async function startRecording() {
   rec.chunkStartTime = Date.now();
   rec.elapsed = 0;
 
-  // ② Web Audio API GainNode で増幅してからMediaRecorderへ渡す
-  const gainValue = parseFloat(localStorage.getItem('micGain') || '3');
+  // Audio chain: Gain → [Filter] → [Compressor]
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
   let recordingStream = stream;
   if (AudioCtx) {
     try {
       const audioCtx = new AudioCtx();
       const source = audioCtx.createMediaStreamSource(stream);
-      const gainNode = audioCtx.createGain();
-      gainNode.gain.value = gainValue;
-      const dest = audioCtx.createMediaStreamDestination();
-      source.connect(gainNode);
-      gainNode.connect(dest);
+      const dest = buildAudioChain(audioCtx, source);
       rec.audioContext = audioCtx;
       recordingStream = dest.stream;
     } catch (e) {
-      console.warn('GainNode setup failed, using raw stream:', e);
+      console.warn('Audio chain setup failed, using raw stream:', e);
     }
   }
 
