@@ -1,0 +1,29 @@
+{
+  "name": "meeting-minutes",
+  "version": "1.0.0",
+  "description": "",
+  "main": "app.js",
+  "scripts": {
+    "build": "node scripts/copy-www.js",
+    "sync": "npm run build && npx cap sync android",
+    "open:android": "npx cap open android"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/smayokt-dotcom/RecordSummary.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/smayokt-dotcom/RecordSummary/issues"
+  },
+  "homepage": "https://github.com/smayokt-dotcom/RecordSummary#readme",
+  "dependencies": {
+    "@capacitor/android": "^8.3.1",
+    "@capacitor/cli": "^8.3.1",
+    "@capacitor/core": "^8.3.1",
+    "@capawesome-team/capacitor-android-foreground-service": "^8.1.0"
+  }
+}

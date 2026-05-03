@@ -1,0 +1,8 @@
+{
+  "appId": "com.recordsummary.app",
+  "appName": "議事録メーカー",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  }
+}
