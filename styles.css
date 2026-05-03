@@ -62,6 +62,8 @@ body {
 .btn-danger:hover { background: #b91c1c; }
 .btn-ghost { background: transparent; color: var(--primary); border: 1px solid var(--primary); }
 .btn-ghost:hover { background: #eff6ff; }
+.btn-warning { background: #f59e0b; color: white; }
+.btn-warning:hover { background: #d97706; }
 .btn-large { width: 100%; padding: 16px; font-size: 16px; border-radius: 12px; white-space: nowrap; }
 .btn-sm { padding: 6px 12px; font-size: 13px; border-radius: 6px; }
 .btn-icon {
@@ -82,6 +84,7 @@ body {
 .btn-icon:hover { background: rgba(255,255,255,0.2); }
 .delete-btn { color: var(--text-muted); font-size: 13px; }
 .delete-btn:hover { color: var(--danger); background: #fee2e2; }
+.js-edit:hover { color: var(--primary) !important; background: #eff6ff; }
 
 /* ── Main ── */
 .main-content {
@@ -126,6 +129,7 @@ body {
 }
 .meeting-title { font-weight: 600; font-size: 15px; flex: 1; }
 .meeting-meta { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 13px; margin-bottom: 10px; }
+.meeting-meta-extra { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
 .badge { padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; }
 .badge-recording { background: #fee2e2; color: var(--red); animation: pulse 1.5s infinite; }
 .meeting-actions { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -147,6 +151,7 @@ body {
   background: var(--text-muted); flex-shrink: 0;
 }
 .status-dot.recording { background: var(--red); animation: pulse 1s infinite; }
+.status-dot.paused { background: #f59e0b; }
 .status-text { font-weight: 500; font-size: 14px; }
 .elapsed { margin-left: auto; font-family: monospace; font-size: 16px; font-weight: 700; color: var(--red); }
 
@@ -195,6 +200,17 @@ body {
 .processing-indicator { color: var(--primary); font-size: 13px; padding: 8px 0; animation: pulse 1.5s infinite; }
 .transcript-empty { color: var(--text-muted); font-size: 13px; text-align: center; padding: 24px 0; line-height: 1.6; }
 .chunk-cd { font-size: 12px; color: #94a3b8; white-space: nowrap; }
+.ts-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-family: monospace;
+  color: var(--primary);
+  background: #eff6ff;
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-right: 6px;
+  flex-shrink: 0;
+}
 .status-dot.processing { background: #f59e0b; animation: pulse 0.6s infinite; }
 .record-controls { display: flex; flex-direction: column; gap: 10px; }
 .error-banner {
@@ -255,6 +271,27 @@ body {
   background: var(--bg);
 }
 
+/* ── Transcript with timestamps ── */
+.raw-segment {
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 14px;
+  line-height: 1.7;
+}
+.raw-segment:last-child { border-bottom: none; }
+.ts-label {
+  display: inline-block;
+  font-size: 11px;
+  font-family: monospace;
+  font-weight: 600;
+  color: var(--primary);
+  background: #eff6ff;
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-bottom: 4px;
+}
+.ts-text { margin-top: 2px; }
+
 /* ── Transcript full ── */
 .transcript-meta {
   font-size: 13px; color: var(--text-muted);
@@ -305,6 +342,16 @@ body {
 @keyframes slideUp { from { transform:translateY(20px); opacity:0; } to { transform:translateY(0); opacity:1; } }
 .modal-heading { font-size: 18px; font-weight: 700; }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+/* ── Word Dict ── */
+.dict-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.dict-entry .input { flex: 1; min-width: 0; }
+.dict-arrow { font-size: 13px; color: var(--text-muted); flex-shrink: 0; }
 
 /* ── Settings extras ── */
 .input-row { display: flex; gap: 8px; }

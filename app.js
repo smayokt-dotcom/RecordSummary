@@ -18,22 +18,6 @@ function openDB() {
   });
 }
 
-function dbTx(mode, fn) {
-  const tx = db.transaction('meetings', mode);
-  const store = tx.objectStore('meetings');
-  return new Promise((resolve, reject) => {
-    const req = fn(store);
-    if (req) req.onsuccess = () => resolve(req.result);
-    tx.oncomplete = () => { if (!req) resolve(); };
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-const getAllMeetings = () => dbTx('readonly', store => {
-  const req = store.index('createdAt').getAll();
-  return { onsuccess: null, _req: req, then: undefined };
-}).catch(() => []).then ? null : null; // override below
-
 async function fetchAllMeetings() {
   return new Promise((resolve, reject) => {
     const tx = db.transaction('meetings', 'readonly');
@@ -100,15 +84,42 @@ function esc(str) {
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ── Word Dictionary ──────────────────────────────────────────────────────────
+function loadWordDict() {
+  try { return JSON.parse(localStorage.getItem('wordDict') || '[]'); } catch { return []; }
+}
+function saveWordDict(dict) {
+  localStorage.setItem('wordDict', JSON.stringify(dict));
+}
+function applyWordDict(text) {
+  const dict = loadWordDict();
+  let result = text;
+  for (const { from, to } of dict) {
+    if (!from) continue;
+    result = result.split(from).join(to);
+  }
+  return result;
+}
+
 // ── State ────────────────────────────────────────────────────────────────────
 const S = {
   view: 'home',
   meetings: [],
   currentMeeting: null,
   rec: {
-    active: false, processing: false, segments: [],
-    stream: null, mediaRecorder: null, audioBuffer: [],
-    elapsed: 0, timer: null, chunkTimer: null, chunkStartTime: 0,
+    active: false,
+    paused: false,
+    processing: false,
+    segments: [],
+    rawSegments: [],      // [{text, ts, elapsed}]
+    stream: null,
+    mediaRecorder: null,
+    audioBuffer: [],
+    elapsed: 0,
+    elapsedBase: 0,       // accumulated elapsed from previous sessions
+    timer: null,
+    chunkTimer: null,
+    chunkStartTime: 0,
     audioContext: null
   },
   generating: false,
@@ -135,8 +146,16 @@ function vHome() {
     <div class="meeting-card">
       <div class="meeting-card-header">
         <span class="meeting-title">${esc(m.title)}</span>
-        <button class="btn-icon delete-btn" data-id="${m.id}" title="削除">✕</button>
+        <div style="display:flex;gap:4px;flex-shrink:0">
+          <button class="btn-icon js-edit" data-id="${m.id}" title="編集" style="color:var(--text-muted);font-size:15px">✏</button>
+          <button class="btn-icon delete-btn" data-id="${m.id}" title="削除">✕</button>
+        </div>
       </div>
+      ${(m.location || m.participants) ? `
+      <div class="meeting-meta-extra">
+        ${m.location ? `<span>📍 ${esc(m.location)}</span>` : ''}
+        ${m.participants ? `<span>👥 ${esc(m.participants)}</span>` : ''}
+      </div>` : ''}
       <div class="meeting-meta">
         <span>${fmtDateTime(m.startTime, m.endTime)}</span>
         ${m.endTime
@@ -172,7 +191,27 @@ function vRecord() {
   const rec = S.rec;
   const charCount = rec.segments.join('').length;
   const chunkSec = parseInt(localStorage.getItem('chunkInterval') || '60');
-  const statusText = rec.processing ? '処理中…' : rec.active ? '録音中' : '停止中';
+  let statusText = '停止中';
+  if (rec.active && rec.paused) statusText = '一時停止中';
+  else if (rec.active) statusText = '録音中';
+  else if (rec.processing) statusText = '処理中…';
+
+  let controls = '';
+  if (rec.active) {
+    controls = `
+      ${rec.paused
+        ? `<button class="btn btn-primary btn-large js-resume">▶&ensp;録音再開</button>`
+        : `<button class="btn btn-warning btn-large js-pause">⏸&ensp;一時停止</button>`}
+      <button class="btn btn-danger btn-large js-stop">⏹&ensp;録音停止</button>
+    `;
+  } else {
+    controls = `
+      ${rec.segments.length
+        ? `<button class="btn btn-primary btn-large js-start-resume">🎙&ensp;録音を続ける</button>
+           <button class="btn btn-secondary btn-large js-generate-now">📝&ensp;議事録を生成</button>`
+        : `<button class="btn btn-primary btn-large js-start">🎙&ensp;録音開始</button>`}
+    `;
+  }
 
   return `
     <header class="app-header">
@@ -182,10 +221,10 @@ function vRecord() {
     </header>
     <main class="main-content">
       <div class="record-status">
-        <div class="status-dot${rec.active ? ' recording' : ''}${rec.processing ? ' processing' : ''}"></div>
+        <div class="status-dot${rec.active && !rec.paused ? ' recording' : ''}${rec.active && rec.paused ? ' paused' : ''}${rec.processing ? ' processing' : ''}"></div>
         <span class="status-text">${statusText}</span>
         <span style="margin-left:auto;display:flex;gap:10px;align-items:center">
-          ${rec.active ? `<span class="chunk-cd" id="chunkCountdown">−</span>` : ''}
+          ${rec.active && !rec.paused ? `<span class="chunk-cd" id="chunkCountdown">−</span>` : ''}
           ${rec.active ? `<span class="elapsed" id="elapsedDisplay">${fmtElapsed(rec.elapsed)}</span>` : ''}
         </span>
       </div>
@@ -195,18 +234,16 @@ function vRecord() {
           <span class="word-count" id="wordCountDisplay">${charCount} 文字</span>
         </div>
         <div class="transcript-content" id="transcriptContent">
-          ${rec.segments.map(s => `<div class="segment-block">${esc(s)}</div>`).join('')}
+          ${rec.rawSegments.map(s => `
+            <div class="segment-block">
+              <span class="ts-badge">${esc(s.ts)}</span>
+              ${esc(s.text)}
+            </div>`).join('')}
           ${rec.processing ? '<div class="processing-indicator">⏳ Gemini で文字起こし処理中…</div>' : ''}
-          ${!rec.segments.length && !rec.processing ? `<div class="transcript-empty">録音を開始すると ${chunkSec} 秒ごとに文字起こし結果が表示されます</div>` : ''}
+          ${!rec.rawSegments.length && !rec.processing ? `<div class="transcript-empty">録音を開始すると ${chunkSec} 秒ごとに文字起こし結果が表示されます</div>` : ''}
         </div>
       </div>
-      <div class="record-controls">
-        ${rec.active
-          ? `<button class="btn btn-danger btn-large js-stop">⏹&ensp;録音停止</button>`
-          : `<button class="btn btn-primary btn-large js-start">🎙&ensp;録音開始</button>
-             ${rec.segments.length ? `<button class="btn btn-secondary btn-large js-generate-now">📝&ensp;議事録を生成</button>` : ''}`
-        }
-      </div>
+      <div class="record-controls">${controls}</div>
     </main>
   `;
 }
@@ -256,7 +293,17 @@ function renderMinutesHTML(text) {
 // ── View: Transcript ─────────────────────────────────────────────────────────
 function vTranscript() {
   const m = S.currentMeeting;
-  const text = (m?.transcript || []).join('\n\n');
+  const rawSegs = m?.rawSegments || [];
+  let content;
+  if (rawSegs.length) {
+    content = rawSegs.map(s =>
+      `<div class="raw-segment"><span class="ts-label">[${esc(s.ts)}]</span><div class="ts-text">${esc(s.text)}</div></div>`
+    ).join('');
+  } else {
+    const text = (m?.transcript || []).join('\n\n');
+    content = `<div style="white-space:pre-wrap">${esc(text) || '文字起こしデータがありません'}</div>`;
+  }
+
   return `
     <header class="app-header">
       <button class="btn-icon js-back">←</button>
@@ -267,8 +314,10 @@ function vTranscript() {
       <div class="transcript-meta">
         <strong>${esc(m?.title || '')}</strong>
         <span>${fmtDateTime(m?.startTime, m?.endTime)}</span>
+        ${m?.location ? `<span>📍 ${esc(m.location)}</span>` : ''}
+        ${m?.participants ? `<span>👥 ${esc(m.participants)}</span>` : ''}
       </div>
-      <div class="transcript-full">${esc(text) || '文字起こしデータがありません'}</div>
+      <div class="transcript-full">${content}</div>
       ${!m?.minutes && m?.transcript?.length
         ? `<button class="btn btn-primary btn-large js-generate-now">📝&ensp;議事録を生成</button>`
         : ''}
@@ -286,6 +335,8 @@ function vSettings() {
     ['ja-JP','日本語'], ['en-US','English (US)'], ['en-GB','English (UK)'],
     ['zh-CN','中文（简体）'], ['ko-KR','한국어']
   ];
+  const minutesMode = localStorage.getItem('minutesMode') || 'standard';
+
   return `
     <header class="app-header">
       <button class="btn-icon js-back">←</button>
@@ -390,6 +441,27 @@ function vSettings() {
       </div>
 
       <div class="settings-section">
+        <div class="settings-label">単語辞書（誤変換修正）</div>
+        <div class="settings-hint">「誤変換」→「正しい表記」の対応を登録。文字起こしプロンプトと後処理の両方に適用されます。</div>
+        <div id="wordDictList"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-ghost js-add-dict-entry" style="width:auto">＋ エントリ追加</button>
+          <button class="btn btn-primary js-save-dict" style="width:auto">辞書を保存</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-label">議事録まとめモード</div>
+        <select id="minutesModeSelect" class="input">
+          <option value="standard"${minutesMode==='standard'?' selected':''}>標準（サマリ＋アクション＋トピック）</option>
+          <option value="simple"${minutesMode==='simple'?' selected':''}>シンプル（サマリのみ）</option>
+          <option value="action"${minutesMode==='action'?' selected':''}>アクション重視</option>
+        </select>
+        <div class="settings-hint">※ モード別テンプレートは後日追加予定</div>
+        <button class="btn btn-primary js-save-minutes-mode" style="width:auto">保存</button>
+      </div>
+
+      <div class="settings-section">
         <div class="settings-label">文字起こし言語</div>
         <select id="langSelect" class="input">
           ${langs.map(([v,l]) => `<option value="${v}"${v === lang ? ' selected' : ''}>${l}</option>`).join('')}
@@ -414,6 +486,32 @@ function loadStoredModels() {
   try { return JSON.parse(localStorage.getItem('geminiModels') || '[]'); } catch { return []; }
 }
 
+// ── Word Dict UI ─────────────────────────────────────────────────────────────
+function renderWordDictUI() {
+  const container = document.getElementById('wordDictList');
+  if (!container) return;
+  const dict = loadWordDict();
+  container.innerHTML = dict.length
+    ? dict.map((entry, i) => `
+        <div class="dict-entry" data-idx="${i}">
+          <input class="input dict-from" placeholder="誤変換" value="${esc(entry.from)}">
+          <span class="dict-arrow">→</span>
+          <input class="input dict-to" placeholder="正しい表記" value="${esc(entry.to)}">
+          <button class="btn-icon dict-remove" data-idx="${i}" style="color:var(--text-muted);font-size:13px">✕</button>
+        </div>
+      `).join('')
+    : '<div class="settings-hint">エントリがありません。「＋ エントリ追加」で登録できます。</div>';
+
+  container.querySelectorAll('.dict-remove').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const d = loadWordDict();
+      d.splice(parseInt(btn.dataset.idx), 1);
+      saveWordDict(d);
+      renderWordDictUI();
+    });
+  });
+}
+
 // ── Bind events ──────────────────────────────────────────────────────────────
 function bind() {
   on('.js-new', 'click', openNewMeetingModal);
@@ -432,6 +530,7 @@ function bind() {
     S.currentMeeting = await getMeeting(btn.dataset.id);
     doGenerate(S.currentMeeting);
   });
+  onAll('.js-edit', 'click', btn => openEditMeetingModal(btn.dataset.id));
   onAll('.delete-btn', 'click', async btn => {
     if (!confirm('この会議を削除しますか？')) return;
     await removeMeeting(btn.dataset.id);
@@ -439,7 +538,10 @@ function bind() {
     render();
   });
 
-  on('.js-start', 'click', startRecording);
+  on('.js-start', 'click', () => startRecording(false));
+  on('.js-start-resume', 'click', () => startRecording(true));
+  on('.js-pause', 'click', pauseRecording);
+  on('.js-resume', 'click', resumeRecording);
   on('.js-stop', 'click', stopRecording);
   on('.js-generate-now', 'click', () => doGenerate(S.currentMeeting));
 
@@ -450,7 +552,11 @@ function bind() {
   on('.js-regenerate', 'click', () => doGenerate(S.currentMeeting));
 
   on('.js-copy-transcript', 'click', () => {
-    const text = (S.currentMeeting?.transcript || []).join('\n\n');
+    const m = S.currentMeeting;
+    const rawSegs = m?.rawSegments || [];
+    const text = rawSegs.length
+      ? rawSegs.map(s => `[${s.ts}]\n${s.text}`).join('\n\n')
+      : (m?.transcript || []).join('\n\n');
     navigator.clipboard.writeText(text).then(() => toast('コピーしました'));
   });
 
@@ -487,7 +593,6 @@ function bind() {
     localStorage.setItem('speakerDiarization', val);
     toast('話者切り分け設定を保存しました');
   });
-  // フィルタープリセット変更 → カスタム入力欄の表示切り替え
   on('#filterPresetSelect', 'change', () => {
     const val = document.getElementById('filterPresetSelect')?.value;
     const el = document.getElementById('customFilterInputs');
@@ -511,6 +616,28 @@ function bind() {
     localStorage.setItem('compressor', val);
     toast('コンプレッサー設定を保存しました');
   });
+  // 単語辞書
+  on('.js-add-dict-entry', 'click', () => {
+    const d = loadWordDict();
+    d.push({ from: '', to: '' });
+    saveWordDict(d);
+    renderWordDictUI();
+  });
+  on('.js-save-dict', 'click', () => {
+    const entries = [...document.querySelectorAll('.dict-entry')];
+    const dict = entries.map(el => ({
+      from: el.querySelector('.dict-from')?.value.trim() || '',
+      to: el.querySelector('.dict-to')?.value.trim() || ''
+    })).filter(e => e.from);
+    saveWordDict(dict);
+    toast('辞書を保存しました');
+  });
+  on('.js-save-minutes-mode', 'click', () => {
+    const val = document.getElementById('minutesModeSelect')?.value;
+    if (!val) return;
+    localStorage.setItem('minutesMode', val);
+    toast('まとめモードを保存しました');
+  });
   on('.js-clear-data', 'click', async () => {
     if (!confirm('全てのデータを削除しますか？この操作は取り消せません。')) return;
     for (const m of S.meetings) await removeMeeting(m.id);
@@ -518,6 +645,9 @@ function bind() {
     toast('削除しました');
     go('home');
   });
+
+  // 設定画面：辞書UI初期表示
+  renderWordDictUI();
 }
 
 function on(sel, ev, fn) {
@@ -648,17 +778,99 @@ async function createMeeting(title) {
   const meeting = {
     id: uid(),
     title: title || '無題の会議',
+    location: '',
+    participants: '',
     startTime: new Date().toISOString(),
     endTime: null,
     transcript: [],
+    rawSegments: [],
     minutes: null,
     createdAt: Date.now()
   };
   await putMeeting(meeting);
   S.currentMeeting = meeting;
   S.meetings = [meeting, ...S.meetings];
-  S.rec = { active: false, processing: false, segments: [], stream: null, mediaRecorder: null, audioBuffer: [], elapsed: 0, timer: null, chunkTimer: null, chunkStartTime: 0, audioContext: null };
+  S.rec = {
+    active: false, paused: false, processing: false, segments: [],
+    rawSegments: [], stream: null, mediaRecorder: null, audioBuffer: [],
+    elapsed: 0, elapsedBase: 0, timer: null, chunkTimer: null,
+    chunkStartTime: 0, audioContext: null
+  };
   go('record');
+}
+
+// ── Edit meeting modal ────────────────────────────────────────────────────────
+async function openEditMeetingModal(id) {
+  const meeting = await getMeeting(id);
+  if (!meeting) return;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="modal-heading">会議を編集</div>
+      <input type="text" class="input" id="editTitleInput" placeholder="会議タイトル" value="${esc(meeting.title)}" maxlength="80">
+      <input type="text" class="input" id="editLocationInput" placeholder="場所（例：第一会議室）" value="${esc(meeting.location||'')}" maxlength="80">
+      <textarea class="input" id="editParticipantsInput" placeholder="参加者（例：山田、鈴木、田中）" maxlength="200" style="resize:vertical;min-height:64px">${esc(meeting.participants||'')}</textarea>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="editModalCancel">キャンセル</button>
+        <button class="btn btn-primary" id="editModalConfirm">保存</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#editTitleInput').focus();
+
+  const close = () => overlay.remove();
+  const save = async () => {
+    const t = document.getElementById('editTitleInput').value.trim();
+    meeting.title = t || meeting.title;
+    meeting.location = document.getElementById('editLocationInput').value.trim();
+    meeting.participants = document.getElementById('editParticipantsInput').value.trim();
+    await putMeeting(meeting);
+    S.meetings = await fetchAllMeetings();
+    close();
+    render();
+  };
+
+  overlay.querySelector('#editModalCancel').addEventListener('click', close);
+  overlay.querySelector('#editModalConfirm').addEventListener('click', save);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+}
+
+// ── Pause / Resume recording ─────────────────────────────────────────────────
+function pauseRecording() {
+  const rec = S.rec;
+  if (!rec.active || rec.paused) return;
+  if (rec.mediaRecorder?.state === 'recording') {
+    rec.mediaRecorder.pause();
+  }
+  clearInterval(rec.timer);
+  clearInterval(rec.chunkTimer);
+  rec.timer = null;
+  rec.chunkTimer = null;
+  rec.paused = true;
+  render();
+}
+
+function resumeRecording() {
+  const rec = S.rec;
+  if (!rec.active || !rec.paused) return;
+  if (rec.mediaRecorder?.state === 'paused') {
+    rec.mediaRecorder.resume();
+  }
+  const chunkMs = parseInt(localStorage.getItem('chunkInterval') || '60') * 1000;
+  rec.paused = false;
+  rec.chunkTimer = setInterval(processChunk, chunkMs);
+  rec.timer = setInterval(() => {
+    rec.elapsed++;
+    const el = document.getElementById('elapsedDisplay');
+    if (el) el.textContent = fmtElapsed(rec.elapsed);
+    const remaining = Math.max(0, Math.round(chunkMs / 1000 - (Date.now() - rec.chunkStartTime) / 1000));
+    const cd = document.getElementById('chunkCountdown');
+    if (cd) cd.textContent = `${remaining}秒後に処理`;
+  }, 1000);
+  render();
 }
 
 // ── MediaRecorder + Gemini Audio ─────────────────────────────────────────────
@@ -668,19 +880,17 @@ let processingQueue = Promise.resolve();
 function buildAudioChain(audioCtx, source) {
   const nodes = [];
 
-  // Gain
   const gain = audioCtx.createGain();
   gain.gain.value = parseFloat(localStorage.getItem('micGain') || '3');
   nodes.push(gain);
 
-  // Filter (highpass + lowpass)
   const preset = localStorage.getItem('filterPreset') || 'off';
   if (preset !== 'off') {
     let hp, lp;
     if      (preset === 'standard')   { hp = 100; lp = 8000; }
     else if (preset === 'conference') { hp = 200; lp = 6000; }
     else if (preset === 'phone')      { hp = 300; lp = 3400; }
-    else { // custom
+    else {
       hp = parseFloat(localStorage.getItem('highpassFreq') || '100');
       lp = parseFloat(localStorage.getItem('lowpassFreq') || '8000');
     }
@@ -692,7 +902,6 @@ function buildAudioChain(audioCtx, source) {
     nodes.push(lpf);
   }
 
-  // Compressor
   if (localStorage.getItem('compressor') === 'true') {
     const comp = audioCtx.createDynamicsCompressor();
     comp.threshold.value = -24; comp.knee.value = 30;
@@ -700,7 +909,6 @@ function buildAudioChain(audioCtx, source) {
     nodes.push(comp);
   }
 
-  // Chain: source → node[0] → … → node[n] → dest
   source.connect(nodes[0]);
   for (let i = 0; i < nodes.length - 1; i++) nodes[i].connect(nodes[i + 1]);
   const dest = audioCtx.createMediaStreamDestination();
@@ -713,13 +921,15 @@ function getSupportedMimeType() {
     .find(t => MediaRecorder.isTypeSupported(t)) || '';
 }
 
-function blobToBase64(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result.split(',')[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
+async function blobToBase64(blob) {
+  const buffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 8192;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
 }
 
 async function transcribeAudio(base64, mimeType) {
@@ -729,8 +939,13 @@ async function transcribeAudio(base64, mimeType) {
   const lang = localStorage.getItem('speechLang') || 'ja-JP';
   const langName = { 'ja-JP':'日本語','en-US':'英語','en-GB':'英語','zh-CN':'中国語','ko-KR':'韓国語' }[lang] || '日本語';
   const diarize = localStorage.getItem('speakerDiarization') === 'true';
-  // 直前チャンクの末尾をコンテキストとして渡す（話者ラベルの一貫性確保に使用）
   const ctx = S.rec.segments.slice(-2).join('').slice(-400);
+
+  // 単語辞書ヒント
+  const dict = loadWordDict();
+  const dictHint = dict.length
+    ? `\n\n専門用語・固有名詞の対応表（以下の表記を優先すること）:\n${dict.map(d => `「${d.from}」→「${d.to}」`).join('\n')}`
+    : '';
 
   let prompt;
   if (diarize) {
@@ -739,13 +954,16 @@ async function transcribeAudio(base64, mimeType) {
 ${ctx
   ? `直前の文脈（ここに登場した話者ラベルを必ず引き継いで一貫性を保つこと）:\n「…${ctx}」`
   : '初めて登場する話者から順に話者A・話者B・話者Cと割り当てること。'}
-話し言葉そのままで、句読点を適切に追加。
+話し言葉そのままで、句読点を適切に追加。${dictHint}
 文字起こしテキストのみ出力すること。`;
   } else {
     prompt = `この音声を${langName}で正確に文字起こしして。${ctx ? `直前の文脈:「…${ctx}」` : ''}
-話し言葉そのままで、句読点を適切に追加。複数話者もそのまま書き起こす。
+話し言葉そのままで、句読点を適切に追加。複数話者もそのまま書き起こす。${dictHint}
 文字起こしテキストのみ出力すること。`;
   }
+
+  if (!base64 || base64.length < 100) throw new Error('base64 データが空です');
+  console.log(`[transcribe] mime=${mimeType} base64len=${base64.length}`);
 
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
@@ -774,11 +992,21 @@ async function processChunk() {
   if (!rec.audioBuffer.length) return;
   const chunks = [...rec.audioBuffer];
   rec.audioBuffer = [];
+  // タイムスタンプ：チャンク処理時点の経過時間
+  const chunkElapsed = rec.elapsed;
+  const chunkTs = fmtElapsed(chunkElapsed);
   rec.chunkStartTime = Date.now();
 
-  const mimeType = (rec.mediaRecorder?.mimeType || 'audio/webm').split(';')[0];
+  const rawMime = rec.mediaRecorder?.mimeType || 'audio/webm';
+  let mimeType = rawMime.split(';')[0].trim();
+  const geminiAudioTypes = ['audio/webm','audio/mp4','audio/mpeg','audio/wav','audio/ogg','audio/aac','audio/flac'];
+  if (mimeType.startsWith('video/') || !geminiAudioTypes.includes(mimeType)) {
+    mimeType = 'audio/webm';
+  }
+
   const blob = new Blob(chunks, { type: mimeType });
-  if (blob.size < 2000) return;
+  console.log(`[chunk] size=${blob.size} mime=${mimeType} rawMime=${rawMime}`);
+  if (blob.size < 1000) return;
 
   rec.processing = true;
   updateTranscriptUI();
@@ -786,8 +1014,14 @@ async function processChunk() {
   processingQueue = processingQueue.then(async () => {
     try {
       const base64 = await blobToBase64(blob);
-      const text = await transcribeAudio(base64, mimeType);
-      if (text) { rec.segments.push(text); autoSave(); }
+      let text = await transcribeAudio(base64, mimeType);
+      // 単語辞書の後処理適用
+      text = applyWordDict(text);
+      if (text) {
+        rec.segments.push(text);
+        rec.rawSegments.push({ text, ts: chunkTs, elapsed: chunkElapsed });
+        autoSave();
+      }
     } catch (e) {
       console.error('Transcription error:', e);
     } finally {
@@ -797,16 +1031,27 @@ async function processChunk() {
   });
 }
 
-async function startRecording() {
+async function startRecording(resuming = false) {
   if (!localStorage.getItem('geminiApiKey')) {
     alert('先に設定画面でGemini APIキーを設定してください。');
     return;
   }
   let stream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true }
-    });
+    const audioConstraints = [
+      { echoCancellation: false, noiseSuppression: false, autoGainControl: true },
+      { echoCancellation: true,  noiseSuppression: false, autoGainControl: true },
+      true
+    ];
+    for (const constraint of audioConstraints) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: constraint });
+        break;
+      } catch (e) {
+        if (e.name === 'NotAllowedError') throw e;
+        if (constraint === true) throw e;
+      }
+    }
   } catch (e) {
     alert(e.name === 'NotAllowedError'
       ? 'マイクへのアクセスが拒否されました。ブラウザの設定を確認してください。'
@@ -816,12 +1061,21 @@ async function startRecording() {
 
   const rec = S.rec;
   rec.active = true;
+  rec.paused = false;
   rec.stream = stream;
   rec.audioBuffer = [];
   rec.chunkStartTime = Date.now();
-  rec.elapsed = 0;
 
-  // Audio chain: Gain → [Filter] → [Compressor]
+  if (resuming) {
+    // 前回の経過時間を引き継ぐ
+    rec.elapsed = rec.elapsedBase;
+  } else {
+    rec.elapsed = 0;
+    rec.elapsedBase = 0;
+    rec.segments = [];
+    rec.rawSegments = [];
+  }
+
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
   let recordingStream = stream;
   if (AudioCtx) {
@@ -837,7 +1091,6 @@ async function startRecording() {
   }
 
   const mimeType = getSupportedMimeType();
-  // ③ ビットレートを明示指定（128kbps）
   const mrOptions = mimeType
     ? { mimeType, audioBitsPerSecond: 128000 }
     : { audioBitsPerSecond: 128000 };
@@ -848,7 +1101,6 @@ async function startRecording() {
 
   const chunkMs = parseInt(localStorage.getItem('chunkInterval') || '60') * 1000;
   rec.chunkTimer = setInterval(processChunk, chunkMs);
-
   rec.timer = setInterval(() => {
     rec.elapsed++;
     const el = document.getElementById('elapsedDisplay');
@@ -864,6 +1116,9 @@ async function startRecording() {
 function stopRecording() {
   const rec = S.rec;
   rec.active = false;
+  rec.paused = false;
+  // 次の「録音を続ける」のために経過時間を保存
+  rec.elapsedBase = rec.elapsed;
   clearInterval(rec.timer);
   clearInterval(rec.chunkTimer);
   rec.timer = null;
@@ -883,6 +1138,7 @@ function stopRecording() {
     if (S.currentMeeting) {
       S.currentMeeting.endTime = new Date().toISOString();
       S.currentMeeting.transcript = [...rec.segments];
+      S.currentMeeting.rawSegments = [...rec.rawSegments];
       await putMeeting(S.currentMeeting);
     }
     render();
@@ -896,10 +1152,15 @@ function updateTranscriptUI() {
   const container = document.getElementById('transcriptContent');
   if (!container) return;
   const rec = S.rec;
+  const chunkSec = parseInt(localStorage.getItem('chunkInterval') || '60');
   container.innerHTML =
-    rec.segments.map(s => `<div class="segment-block">${esc(s)}</div>`).join('') +
+    rec.rawSegments.map(s => `
+      <div class="segment-block">
+        <span class="ts-badge">${esc(s.ts)}</span>
+        ${esc(s.text)}
+      </div>`).join('') +
     (rec.processing ? '<div class="processing-indicator">⏳ Gemini で文字起こし処理中…</div>' : '') +
-    (!rec.segments.length && !rec.processing ? `<div class="transcript-empty">録音を開始すると ${parseInt(localStorage.getItem('chunkInterval')||'60')} 秒ごとに文字起こし結果が表示されます</div>` : '');
+    (!rec.rawSegments.length && !rec.processing ? `<div class="transcript-empty">録音を開始すると ${chunkSec} 秒ごとに文字起こし結果が表示されます</div>` : '');
   container.scrollTop = container.scrollHeight;
   const wc = document.getElementById('wordCountDisplay');
   if (wc) wc.textContent = `${rec.segments.join('').length} 文字`;
@@ -908,6 +1169,7 @@ function updateTranscriptUI() {
 async function autoSave() {
   if (!S.currentMeeting) return;
   S.currentMeeting.transcript = [...S.rec.segments];
+  S.currentMeeting.rawSegments = [...S.rec.rawSegments];
   await putMeeting(S.currentMeeting).catch(() => {});
 }
 
@@ -954,11 +1216,14 @@ async function doGenerate(meeting) {
 function buildPrompt(meeting, transcript) {
   const dt = fmtDateTime(meeting.startTime, meeting.endTime);
   const dur = fmtDuration(meeting.startTime, meeting.endTime);
+  const locationLine = meeting.location ? `\n場所: ${meeting.location}` : '';
+  const participantsLine = meeting.participants ? `\n参加者: ${meeting.participants}` : '';
+
   return `あなたは優秀な秘書です。以下の会議の文字起こしをもとに、構造化された議事録を作成してください。
 
 【会議情報】
 会議名: ${meeting.title}
-日時: ${dt}${dur ? ` (${dur})` : ''}
+日時: ${dt}${dur ? ` (${dur})` : ''}${locationLine}${participantsLine}
 
 【文字起こし】
 ${transcript}
@@ -968,7 +1233,7 @@ ${transcript}
 
 【会議名】${meeting.title}
 【日時】${dt}
-
+${meeting.location ? `【場所】${meeting.location}\n` : ''}${meeting.participants ? `【参加者】${meeting.participants}\n` : ''}
 ■ サマリ
 （会議全体の要約を3〜5文で記述）
 
@@ -1036,7 +1301,7 @@ async function callGemini(prompt, apiKey) {
     const lines = buf.split('\n');
     buf = lines.pop();
     for (const line of lines) {
-      const trimmed = line.trimEnd(); // \r\n 対応
+      const trimmed = line.trimEnd();
       if (!trimmed.startsWith('data: ')) continue;
       const data = trimmed.slice(6).trim();
       if (!data || data === '[DONE]') continue;
