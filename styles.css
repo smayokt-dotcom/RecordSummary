@@ -357,15 +357,44 @@ body {
 .modal-heading { font-size: 18px; font-weight: 700; }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
 
-/* ── Word Dict ── */
-.dict-entry {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
+/* ── Word Dict Table ── */
+.dict-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
 }
-.dict-entry .input { flex: 1; min-width: 0; }
-.dict-arrow { font-size: 13px; color: var(--text-muted); flex-shrink: 0; }
+.dict-table thead th {
+  text-align: left;
+  padding: 6px 8px;
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 2px solid var(--border);
+}
+.dict-table tbody tr:hover { background: var(--bg); }
+.dict-table tbody tr + tr td { border-top: 1px solid var(--border); }
+.dict-cell-from {
+  padding: 8px 8px;
+  color: #dc2626;
+  font-weight: 500;
+  word-break: break-all;
+  width: 35%;
+}
+.dict-cell-to {
+  padding: 8px 8px;
+  color: #16a34a;
+  font-weight: 500;
+  word-break: break-all;
+  width: 35%;
+}
+.dict-cell-actions {
+  padding: 6px 4px;
+  text-align: right;
+  white-space: nowrap;
+}
+.dict-empty { padding: 12px 0; }
 
 /* ── Settings extras ── */
 .input-row { display: flex; gap: 8px; }

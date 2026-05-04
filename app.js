@@ -129,7 +129,7 @@ function importWordDict() {
       if (!imported.length) { alert('有効なエントリが見つかりませんでした'); return; }
       const merge = confirm(`${imported.length}件を読み込みます。\nOK → 現在の辞書に追加\nキャンセル → 現在の辞書を上書き`);
       saveWordDict(merge ? [...loadWordDict(), ...imported] : imported);
-      renderWordDictUI();
+      renderWordDictTable();
       toast(`${imported.length}件をインポートしました`);
     } catch (err) {
       alert('インポートに失敗しました: ' + err.message);
@@ -499,13 +499,10 @@ function vSettings() {
 
       <div class="settings-section">
         <div class="settings-label">単語辞書（誤変換修正）</div>
-        <div class="settings-hint">「誤変換」→「正しい表記」の対応を登録。文字起こしプロンプトと後処理の両方に適用されます。</div>
+        <div class="settings-hint">専門用語・固有名詞の誤変換を登録。Geminiプロンプトへのヒント注入と後処理置換の両方に適用されます。</div>
         <div id="wordDictList"></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-ghost js-add-dict-entry" style="width:auto">＋ エントリ追加</button>
-          <button class="btn btn-primary js-save-dict" style="width:auto">辞書を保存</button>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-primary js-add-dict-entry" style="width:auto">＋ 追加</button>
           <button class="btn btn-ghost js-export-dict" style="width:auto">📤 エクスポート</button>
           <button class="btn btn-ghost js-import-dict" style="width:auto">📥 インポート</button>
         </div>
@@ -548,29 +545,101 @@ function loadStoredModels() {
 }
 
 // ── Word Dict UI ─────────────────────────────────────────────────────────────
-function renderWordDictUI() {
+function renderWordDictTable() {
   const container = document.getElementById('wordDictList');
   if (!container) return;
   const dict = loadWordDict();
-  container.innerHTML = dict.length
-    ? dict.map((entry, i) => `
-        <div class="dict-entry" data-idx="${i}">
-          <input class="input dict-from" placeholder="誤変換" value="${esc(entry.from)}">
-          <span class="dict-arrow">→</span>
-          <input class="input dict-to" placeholder="正しい表記" value="${esc(entry.to)}">
-          <button class="btn-icon dict-remove" data-idx="${i}" style="color:var(--text-muted);font-size:13px">✕</button>
-        </div>
-      `).join('')
-    : '<div class="settings-hint">エントリがありません。「＋ エントリ追加」で登録できます。</div>';
+  if (!dict.length) {
+    container.innerHTML = '<div class="settings-hint dict-empty">エントリがありません。「＋ 追加」で登録できます。</div>';
+    return;
+  }
+  container.innerHTML = `
+    <table class="dict-table">
+      <thead>
+        <tr>
+          <th>誤変換 / 変換前</th>
+          <th>正しい表記 / 変換後</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        ${dict.map((entry, i) => `
+          <tr>
+            <td class="dict-cell-from">${esc(entry.from)}</td>
+            <td class="dict-cell-to">${esc(entry.to)}</td>
+            <td class="dict-cell-actions">
+              <button class="btn btn-sm btn-ghost dict-edit-btn" data-idx="${i}">編集</button>
+              <button class="btn btn-sm btn-ghost dict-del-btn" data-idx="${i}" style="color:var(--danger);border-color:var(--danger)">削除</button>
+            </td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>`;
 
-  container.querySelectorAll('.dict-remove').forEach(btn => {
+  container.querySelectorAll('.dict-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => openDictEntryModal(parseInt(btn.dataset.idx)));
+  });
+  container.querySelectorAll('.dict-del-btn').forEach(btn => {
     btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.idx);
       const d = loadWordDict();
-      d.splice(parseInt(btn.dataset.idx), 1);
+      const entry = d[idx];
+      if (!confirm(`「${entry.from}」→「${entry.to}」を削除しますか？`)) return;
+      d.splice(idx, 1);
       saveWordDict(d);
-      renderWordDictUI();
+      renderWordDictTable();
     });
   });
+}
+
+function openDictEntryModal(idx = null) {
+  const dict = loadWordDict();
+  const entry = idx !== null ? dict[idx] : { from: '', to: '' };
+  const isNew = idx === null;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="modal-heading">${isNew ? '辞書エントリを追加' : '辞書エントリを編集'}</div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <label style="font-size:13px;color:var(--text-muted)">変換前（誤変換・略語など）</label>
+        <input type="text" class="input" id="dictFromInput" placeholder="例: えーあい" value="${esc(entry.from)}">
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <label style="font-size:13px;color:var(--text-muted)">変換後（正しい表記）</label>
+        <input type="text" class="input" id="dictToInput" placeholder="例: AI" value="${esc(entry.to)}">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="dictModalCancel">キャンセル</button>
+        <button class="btn btn-primary" id="dictModalSave">保存</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#dictFromInput').focus();
+
+  const close = () => overlay.remove();
+  const save = () => {
+    const from = document.getElementById('dictFromInput').value.trim();
+    const to   = document.getElementById('dictToInput').value.trim();
+    if (!from) { alert('変換前の語を入力してください'); return; }
+    const d = loadWordDict();
+    if (isNew) {
+      d.push({ from, to });
+    } else {
+      d[idx] = { from, to };
+    }
+    saveWordDict(d);
+    renderWordDictTable();
+    close();
+    toast(isNew ? 'エントリを追加しました' : 'エントリを更新しました');
+  };
+
+  overlay.querySelector('#dictModalCancel').addEventListener('click', close);
+  overlay.querySelector('#dictModalSave').addEventListener('click', save);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  overlay.querySelector('#dictToInput').addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
 }
 
 // ── Bind events ──────────────────────────────────────────────────────────────
@@ -684,21 +753,7 @@ function bind() {
   // 単語辞書
   on('.js-export-dict', 'click', exportWordDict);
   on('.js-import-dict', 'click', importWordDict);
-  on('.js-add-dict-entry', 'click', () => {
-    const d = loadWordDict();
-    d.push({ from: '', to: '' });
-    saveWordDict(d);
-    renderWordDictUI();
-  });
-  on('.js-save-dict', 'click', () => {
-    const entries = [...document.querySelectorAll('.dict-entry')];
-    const dict = entries.map(el => ({
-      from: el.querySelector('.dict-from')?.value.trim() || '',
-      to: el.querySelector('.dict-to')?.value.trim() || ''
-    })).filter(e => e.from);
-    saveWordDict(dict);
-    toast('辞書を保存しました');
-  });
+  on('.js-add-dict-entry', 'click', () => openDictEntryModal(null));
   on('.js-save-minutes-mode', 'click', () => {
     const val = document.getElementById('minutesModeSelect')?.value;
     if (!val) return;
@@ -713,8 +768,8 @@ function bind() {
     go('home');
   });
 
-  // 設定画面：辞書UI初期表示
-  renderWordDictUI();
+  // 設定画面：辞書テーブル初期表示
+  renderWordDictTable();
 }
 
 function on(sel, ev, fn) {
