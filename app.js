@@ -101,6 +101,57 @@ function applyWordDict(text) {
   return result;
 }
 
+function exportWordDict() {
+  const dict = loadWordDict();
+  const defaultName = `word-dict-${new Date().toISOString().slice(0, 10)}`;
+  const filename = prompt('エクスポートファイル名を入力してください（.json は自動付加）', defaultName);
+  if (filename == null) return;
+  const name = (filename.trim() || defaultName).replace(/\.json$/i, '') + '.json';
+  const blob = new Blob([JSON.stringify(dict, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function importWordDict() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.onchange = async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!Array.isArray(data)) throw new Error('配列形式のJSONではありません');
+      const imported = data.filter(e => e && typeof e.from === 'string' && e.from);
+      if (!imported.length) { alert('有効なエントリが見つかりませんでした'); return; }
+      const merge = confirm(`${imported.length}件を読み込みます。\nOK → 現在の辞書に追加\nキャンセル → 現在の辞書を上書き`);
+      saveWordDict(merge ? [...loadWordDict(), ...imported] : imported);
+      renderWordDictUI();
+      toast(`${imported.length}件をインポートしました`);
+    } catch (err) {
+      alert('インポートに失敗しました: ' + err.message);
+    }
+  };
+  input.click();
+}
+
+// ── Minutes mode ─────────────────────────────────────────────────────────────
+const MODES = [
+  { id: 'standard', label: '標準' },
+  { id: 'simple',   label: 'シンプル' },
+  { id: 'action',   label: 'アクション' }
+];
+function getMode() { return localStorage.getItem('minutesMode') || 'standard'; }
+function modeSelectHTML(idAttr) {
+  const cur = getMode();
+  return `<select class="input mode-select-inline" id="${idAttr}">
+    ${MODES.map(m => `<option value="${m.id}"${m.id === cur ? ' selected' : ''}>${m.label}</option>`).join('')}
+  </select>`;
+}
+
 // ── State ────────────────────────────────────────────────────────────────────
 const S = {
   view: 'home',
@@ -208,7 +259,10 @@ function vRecord() {
     controls = `
       ${rec.segments.length
         ? `<button class="btn btn-primary btn-large js-start-resume">🎙&ensp;録音を続ける</button>
-           <button class="btn btn-secondary btn-large js-generate-now">📝&ensp;議事録を生成</button>`
+           <div class="generate-row">
+             ${modeSelectHTML('inlineModeSelectRecord')}
+             <button class="btn btn-secondary btn-large js-generate-now">📝&ensp;議事録を生成</button>
+           </div>`
         : `<button class="btn btn-primary btn-large js-start">🎙&ensp;録音開始</button>`}
     `;
   }
@@ -269,7 +323,10 @@ function vMinutes() {
           <div class="minutes-content">${renderMinutesHTML(m?.minutes || '')}</div>
           <div class="minutes-actions">
             <button class="btn btn-ghost js-view-transcript-from-minutes">文字起こし</button>
-            <button class="btn btn-secondary js-regenerate">再生成</button>
+            <div style="display:flex;gap:8px;align-items:center;flex:1;justify-content:flex-end">
+              ${modeSelectHTML('inlineModeSelectMinutes')}
+              <button class="btn btn-secondary js-regenerate">再生成</button>
+            </div>
           </div>
         `}
       </div>
@@ -448,6 +505,10 @@ function vSettings() {
           <button class="btn btn-ghost js-add-dict-entry" style="width:auto">＋ エントリ追加</button>
           <button class="btn btn-primary js-save-dict" style="width:auto">辞書を保存</button>
         </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-ghost js-export-dict" style="width:auto">📤 エクスポート</button>
+          <button class="btn btn-ghost js-import-dict" style="width:auto">📥 インポート</button>
+        </div>
       </div>
 
       <div class="settings-section">
@@ -616,7 +677,13 @@ function bind() {
     localStorage.setItem('compressor', val);
     toast('コンプレッサー設定を保存しました');
   });
+  // インラインモードセレクター（変更したらlocalStorageに保存）
+  on('#inlineModeSelectRecord',  'change', e => localStorage.setItem('minutesMode', e.target.value));
+  on('#inlineModeSelectMinutes', 'change', e => localStorage.setItem('minutesMode', e.target.value));
+
   // 単語辞書
+  on('.js-export-dict', 'click', exportWordDict);
+  on('.js-import-dict', 'click', importWordDict);
   on('.js-add-dict-entry', 'click', () => {
     const d = loadWordDict();
     d.push({ from: '', to: '' });
@@ -1218,22 +1285,59 @@ function buildPrompt(meeting, transcript) {
   const dur = fmtDuration(meeting.startTime, meeting.endTime);
   const locationLine = meeting.location ? `\n場所: ${meeting.location}` : '';
   const participantsLine = meeting.participants ? `\n参加者: ${meeting.participants}` : '';
+  const headerLines =
+    `【会議名】${meeting.title}\n【日時】${dt}` +
+    (meeting.location ? `\n【場所】${meeting.location}` : '') +
+    (meeting.participants ? `\n【参加者】${meeting.participants}` : '');
+  const mode = getMode();
 
-  return `あなたは優秀な秘書です。以下の会議の文字起こしをもとに、構造化された議事録を作成してください。
+  const info = `あなたは優秀な秘書です。以下の会議の文字起こしをもとに、議事録を作成してください。
 
 【会議情報】
 会議名: ${meeting.title}
 日時: ${dt}${dur ? ` (${dur})` : ''}${locationLine}${participantsLine}
 
 【文字起こし】
-${transcript}
+${transcript}`;
 
-【議事録の形式】
-以下の形式で正確に出力してください（形式を変えないこと）：
+  if (mode === 'simple') {
+    return `${info}
 
-【会議名】${meeting.title}
-【日時】${dt}
-${meeting.location ? `【場所】${meeting.location}\n` : ''}${meeting.participants ? `【参加者】${meeting.participants}\n` : ''}
+【出力形式】
+${headerLines}
+
+■ サマリ
+（会議全体の要約を5〜8文で詳しく記述。重要な決定事項・数値・固有名詞を必ず含める）
+
+文字起こしの内容を忠実に反映し、推測は行わないでください。`;
+  }
+
+  if (mode === 'action') {
+    return `${info}
+
+【出力形式】
+${headerLines}
+
+■ サマリ
+（会議全体の要約を2〜3文で簡潔に）
+
+■ アクションアイテム
+・（アクション内容） → 担当：（担当者名、不明の場合は「不明」） / 期限：（期日、不明の場合は「不明」）
+（複数ある場合は行を分けて列挙。なければ「なし」）
+
+■ 決定事項
+・（決定した内容を箇条書き。なければ「なし」）
+
+文字起こしの内容を忠実に反映し、推測は行わないでください。担当者名・期限は明示された情報のみ使用してください。`;
+  }
+
+  // standard (default)
+  return `${info}
+
+【出力形式】以下の形式で正確に出力してください（形式を変えないこと）：
+
+${headerLines}
+
 ■ サマリ
 （会議全体の要約を3〜5文で記述）
 
