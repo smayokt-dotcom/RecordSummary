@@ -355,6 +355,28 @@ function renderMinutesHTML(text) {
 // ── Rich-text clipboard copy ──────────────────────────────────────────────────
 // text/html + text/plain を同時に書き込む。Word / Google Docs に貼ると書式が再現される。
 async function copyToClipboard(plain, html) {
+  // ① execCommand('copy') — contenteditable div を一瞬DOM追加して選択コピー。
+  //    Google Docs / Notion / Word はこの経路で書式を正しく受け取る。
+  try {
+    const div = document.createElement('div');
+    div.contentEditable = 'true';
+    div.setAttribute('aria-hidden', 'true');
+    div.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;overflow:hidden;opacity:0';
+    div.innerHTML = html;
+    document.body.appendChild(div);
+    div.focus();
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(div);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    const ok = document.execCommand('copy');
+    sel.removeAllRanges();
+    document.body.removeChild(div);
+    if (ok) { toast('コピーしました'); return; }
+  } catch (_) {}
+
+  // ② ClipboardItem (Chromium 系ブラウザの新 API)
   try {
     if (window.ClipboardItem) {
       await navigator.clipboard.write([
@@ -363,16 +385,14 @@ async function copyToClipboard(plain, html) {
           'text/html':  new Blob([html],  { type: 'text/html'  })
         })
       ]);
-    } else {
-      // Android WebView など ClipboardItem 非対応のフォールバック
-      await navigator.clipboard.writeText(plain);
+      toast('コピーしました');
+      return;
     }
-    toast('コピーしました');
-  } catch (e) {
-    // セキュリティ制限などで失敗した場合はプレーンテキストで再試行
-    try { await navigator.clipboard.writeText(plain); toast('コピーしました（プレーン）'); }
-    catch { toast('コピーに失敗しました'); }
-  }
+  } catch (_) {}
+
+  // ③ プレーンテキスト最終フォールバック
+  try { await navigator.clipboard.writeText(plain); toast('コピーしました'); }
+  catch { toast('コピーに失敗しました'); }
 }
 
 function buildMinutesHTML(meeting) {
