@@ -352,6 +352,117 @@ function renderMinutesHTML(text) {
   }).join('');
 }
 
+// ── Rich-text clipboard copy ──────────────────────────────────────────────────
+// text/html + text/plain を同時に書き込む。Word / Google Docs に貼ると書式が再現される。
+async function copyToClipboard(plain, html) {
+  try {
+    if (window.ClipboardItem) {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/plain': new Blob([plain], { type: 'text/plain' }),
+          'text/html':  new Blob([html],  { type: 'text/html'  })
+        })
+      ]);
+    } else {
+      // Android WebView など ClipboardItem 非対応のフォールバック
+      await navigator.clipboard.writeText(plain);
+    }
+    toast('コピーしました');
+  } catch (e) {
+    // セキュリティ制限などで失敗した場合はプレーンテキストで再試行
+    try { await navigator.clipboard.writeText(plain); toast('コピーしました（プレーン）'); }
+    catch { toast('コピーに失敗しました'); }
+  }
+}
+
+function buildMinutesHTML(meeting) {
+  const text = meeting?.minutes || '';
+  const spk  = meeting?.speakerNames;
+  const C = { // インラインスタイル用カラー定数
+    primary: '#ea580c', primaryLight: '#fff7ed', primaryMid: '#fed7aa',
+    text: '#1c1917', muted: '#78716c', border: '#e7e5e4'
+  };
+  const speakerStyle = `color:${C.primary};font-weight:700;background:${C.primaryLight};border-radius:3px;padding:0 3px`;
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function colorSpeakers(escaped) {
+    let r = escaped.replace(/話者([A-Z]):/g,
+      (_, l) => `<span style="${speakerStyle}">話者${l}:</span>`);
+    if (spk) {
+      for (const name of Object.values(spk)) {
+        if (!name) continue;
+        const safe = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        r = r.replace(new RegExp(`(?<![\\wぁ-鿿])${safe}:`, 'g'),
+          `<span style="${speakerStyle}">${name}:</span>`);
+      }
+    }
+    return r;
+  }
+
+  const meta = `
+    <p style="font-size:13px;color:${C.muted};margin:0 0 16px">
+      ${escHtml(meeting?.title || '')} &nbsp;|&nbsp; ${escHtml(fmtDateTime(meeting?.startTime, meeting?.endTime))}
+    </p>`;
+
+  const body = text.split('\n').map(line => {
+    const t = line.trim();
+    if (!t) return '<div style="height:6px"></div>';
+    const e = colorSpeakers(escHtml(t));
+    // 【XX】 単体行 → 大見出し
+    if (/^【.*】$/.test(t)) return `<h2 style="font-size:15px;font-weight:700;color:${C.primary};margin:18px 0 4px;padding:6px 10px;background:${C.primaryLight};border-left:3px solid ${C.primary};border-radius:0 4px 4px 0">${e}</h2>`;
+    // ■ → 中見出し
+    if (/^■/.test(t)) return `<h3 style="font-size:14px;font-weight:700;color:${C.primary};margin:14px 0 4px;border-bottom:1px solid ${C.primaryMid};padding-bottom:3px">${e}</h3>`;
+    // ・ 箇条書き
+    if (/^[・•]/.test(t)) return `<p style="margin:3px 0 3px 14px;color:${C.text}">${e}</p>`;
+    // 【トピック名】… 行
+    if (/^【.+】/.test(t)) return `<h4 style="font-size:13px;font-weight:700;color:${C.text};margin:10px 0 2px">${e}</h4>`;
+    return `<p style="margin:3px 0;color:${C.text}">${e}</p>`;
+  }).join('');
+
+  return `<!DOCTYPE html><html><body style="font-family:sans-serif;line-height:1.7;max-width:720px;margin:0 auto;padding:16px">${meta}${body}</body></html>`;
+}
+
+function buildTranscriptHTML(meeting) {
+  const C = { primary: '#ea580c', primaryLight: '#fff7ed', text: '#1c1917', muted: '#78716c', border: '#e7e5e4' };
+  const speakerStyle = `color:${C.primary};font-weight:700;background:${C.primaryLight};border-radius:3px;padding:0 3px`;
+  const spk = meeting?.speakerNames;
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function colorSpeakers(escaped) {
+    let r = escaped.replace(/話者([A-Z]):/g,
+      (_, l) => `<span style="${speakerStyle}">話者${l}:</span>`);
+    if (spk) {
+      for (const name of Object.values(spk)) {
+        if (!name) continue;
+        const safe = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        r = r.replace(new RegExp(`(?<![\\wぁ-鿿])${safe}:`, 'g'),
+          `<span style="${speakerStyle}">${name}:</span>`);
+      }
+    }
+    return r;
+  }
+
+  const meta = `
+    <p style="font-size:13px;color:${C.muted};margin:0 0 16px">
+      ${escHtml(meeting?.title || '')} &nbsp;|&nbsp; ${escHtml(fmtDateTime(meeting?.startTime, meeting?.endTime))}
+    </p>`;
+
+  const rawSegs = meeting?.rawSegments || [];
+  const body = rawSegs.length
+    ? rawSegs.map(s => `
+        <div style="display:flex;gap:10px;margin:6px 0;align-items:flex-start">
+          <span style="font-size:12px;color:${C.muted};white-space:nowrap;padding-top:2px;min-width:52px">[${escHtml(s.ts)}]</span>
+          <span style="color:${C.text}">${colorSpeakers(escHtml(s.text))}</span>
+        </div>`).join('')
+    : `<p style="white-space:pre-wrap;color:${C.text}">${colorSpeakers(escHtml((meeting?.transcript || []).join('\n\n')))}</p>`;
+
+  return `<!DOCTYPE html><html><body style="font-family:sans-serif;line-height:1.7;max-width:720px;margin:0 auto;padding:16px">${meta}${body}</body></html>`;
+}
+
 // ── View: Transcript ─────────────────────────────────────────────────────────
 function vTranscript() {
   const m = S.currentMeeting;
@@ -751,7 +862,8 @@ function bind() {
   on('.js-generate-now', 'click', () => generateWithModeModal(S.currentMeeting));
 
   on('.js-copy-minutes', 'click', () => {
-    navigator.clipboard.writeText(S.currentMeeting?.minutes || '').then(() => toast('コピーしました'));
+    const m = S.currentMeeting;
+    copyToClipboard(m?.minutes || '', buildMinutesHTML(m));
   });
   on('.js-view-transcript-from-minutes', 'click', () => { S.editingMinutes = false; go('transcript'); });
   on('.js-regenerate', 'click', () => generateWithModeModal(S.currentMeeting));
@@ -797,10 +909,10 @@ function bind() {
   on('.js-copy-transcript', 'click', () => {
     const m = S.currentMeeting;
     const rawSegs = m?.rawSegments || [];
-    const text = rawSegs.length
+    const plain = rawSegs.length
       ? rawSegs.map(s => `[${s.ts}]\n${s.text}`).join('\n\n')
       : (m?.transcript || []).join('\n\n');
-    navigator.clipboard.writeText(text).then(() => toast('コピーしました'));
+    copyToClipboard(plain, buildTranscriptHTML(m));
   });
 
   on('.js-save-key', 'click', () => {
