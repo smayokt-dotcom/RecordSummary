@@ -355,28 +355,22 @@ function renderMinutesHTML(text) {
 // ── Rich-text clipboard copy ──────────────────────────────────────────────────
 // text/html + text/plain を同時に書き込む。Word / Google Docs に貼ると書式が再現される。
 async function copyToClipboard(plain, html) {
-  // ① execCommand('copy') — contenteditable div を一瞬DOM追加して選択コピー。
-  //    Google Docs / Notion / Word はこの経路で書式を正しく受け取る。
-  try {
-    const div = document.createElement('div');
-    div.contentEditable = 'true';
-    div.setAttribute('aria-hidden', 'true');
-    div.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;overflow:hidden;opacity:0';
-    div.innerHTML = html;
-    document.body.appendChild(div);
-    div.focus();
-    const sel = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(div);
-    sel.removeAllRanges();
-    sel.addRange(range);
-    const ok = document.execCommand('copy');
-    sel.removeAllRanges();
-    document.body.removeChild(div);
-    if (ok) { toast('コピーしました'); return; }
-  } catch (_) {}
+  // ① copy イベントをインターセプトして clipboardData に直接セット。
+  //    Google Docs / Notion / Word はこの経路の text/html を書式付きで貼り付ける。
+  //    （Quill / ProseMirror などのエディタと同じ方式）
+  let intercepted = false;
+  const onCopy = e => {
+    e.preventDefault();
+    e.clipboardData.setData('text/html',  html);
+    e.clipboardData.setData('text/plain', plain);
+    intercepted = true;
+  };
+  document.addEventListener('copy', onCopy);
+  document.execCommand('copy');
+  document.removeEventListener('copy', onCopy);
+  if (intercepted) { toast('コピーしました'); return; }
 
-  // ② ClipboardItem (Chromium 系ブラウザの新 API)
+  // ② ClipboardItem (非同期 Clipboard API — HTTPS 必須)
   try {
     if (window.ClipboardItem) {
       await navigator.clipboard.write([
@@ -426,22 +420,38 @@ function buildMinutesHTML(meeting) {
       ${escHtml(meeting?.title || '')} &nbsp;|&nbsp; ${escHtml(fmtDateTime(meeting?.startTime, meeting?.endTime))}
     </p>`;
 
-  const body = text.split('\n').map(line => {
-    const t = line.trim();
-    if (!t) return '<div style="height:6px"></div>';
+  // 連続する ・ 行をまとめて <ul><li> にする
+  const lines = text.split('\n');
+  let bodyParts = [];
+  let i = 0;
+  while (i < lines.length) {
+    const t = lines[i].trim();
+    if (!t) { bodyParts.push('<p>&nbsp;</p>'); i++; continue; }
     const e = colorSpeakers(escHtml(t));
-    // 【XX】 単体行 → 大見出し
-    if (/^【.*】$/.test(t)) return `<h2 style="font-size:15px;font-weight:700;color:${C.primary};margin:18px 0 4px;padding:6px 10px;background:${C.primaryLight};border-left:3px solid ${C.primary};border-radius:0 4px 4px 0">${e}</h2>`;
-    // ■ → 中見出し
-    if (/^■/.test(t)) return `<h3 style="font-size:14px;font-weight:700;color:${C.primary};margin:14px 0 4px;border-bottom:1px solid ${C.primaryMid};padding-bottom:3px">${e}</h3>`;
-    // ・ 箇条書き
-    if (/^[・•]/.test(t)) return `<p style="margin:3px 0 3px 14px;color:${C.text}">${e}</p>`;
-    // 【トピック名】… 行
-    if (/^【.+】/.test(t)) return `<h4 style="font-size:13px;font-weight:700;color:${C.text};margin:10px 0 2px">${e}</h4>`;
-    return `<p style="margin:3px 0;color:${C.text}">${e}</p>`;
-  }).join('');
+    if (/^【.*】$/.test(t)) {
+      bodyParts.push(`<h2 style="font-size:15px;font-weight:700;color:${C.primary};margin:18px 0 4px;padding:6px 10px;background:${C.primaryLight};border-left:3px solid ${C.primary};border-radius:0 4px 4px 0">${e}</h2>`);
+      i++;
+    } else if (/^■/.test(t)) {
+      bodyParts.push(`<h3 style="font-size:14px;font-weight:700;color:${C.primary};margin:14px 0 4px;border-bottom:1px solid ${C.primaryMid};padding-bottom:3px">${e}</h3>`);
+      i++;
+    } else if (/^[・•]/.test(t)) {
+      // 連続する箇条書きを <ul> にまとめる
+      const items = [];
+      while (i < lines.length && /^[・•]/.test(lines[i].trim())) {
+        items.push(`<li style="color:${C.text}">${colorSpeakers(escHtml(lines[i].trim().replace(/^[・•]\s*/, '')))}</li>`);
+        i++;
+      }
+      bodyParts.push(`<ul style="margin:4px 0;padding-left:20px">${items.join('')}</ul>`);
+    } else if (/^【.+】/.test(t)) {
+      bodyParts.push(`<h4 style="font-size:13px;font-weight:700;color:${C.text};margin:10px 0 2px">${e}</h4>`);
+      i++;
+    } else {
+      bodyParts.push(`<p style="margin:3px 0;color:${C.text}">${e}</p>`);
+      i++;
+    }
+  }
 
-  return `<!DOCTYPE html><html><body style="font-family:sans-serif;line-height:1.7;max-width:720px;margin:0 auto;padding:16px">${meta}${body}</body></html>`;
+  return `<!DOCTYPE html><html><body style="font-family:sans-serif;line-height:1.7;max-width:720px;margin:0 auto;padding:16px">${meta}${bodyParts.join('')}</body></html>`;
 }
 
 function buildTranscriptHTML(meeting) {
@@ -473,12 +483,12 @@ function buildTranscriptHTML(meeting) {
 
   const rawSegs = meeting?.rawSegments || [];
   const body = rawSegs.length
-    ? rawSegs.map(s => `
-        <div style="display:flex;gap:10px;margin:6px 0;align-items:flex-start">
-          <span style="font-size:12px;color:${C.muted};white-space:nowrap;padding-top:2px;min-width:52px">[${escHtml(s.ts)}]</span>
-          <span style="color:${C.text}">${colorSpeakers(escHtml(s.text))}</span>
-        </div>`).join('')
-    : `<p style="white-space:pre-wrap;color:${C.text}">${colorSpeakers(escHtml((meeting?.transcript || []).join('\n\n')))}</p>`;
+    ? rawSegs.map(s =>
+        `<p style="margin:6px 0;color:${C.text}"><span style="font-size:12px;color:${C.muted};margin-right:8px">[${escHtml(s.ts)}]</span>${colorSpeakers(escHtml(s.text))}</p>`
+      ).join('')
+    : (meeting?.transcript || []).map(seg =>
+        `<p style="margin:6px 0;color:${C.text}">${colorSpeakers(escHtml(seg))}</p>`
+      ).join('');
 
   return `<!DOCTYPE html><html><body style="font-family:sans-serif;line-height:1.7;max-width:720px;margin:0 auto;padding:16px">${meta}${body}</body></html>`;
 }
