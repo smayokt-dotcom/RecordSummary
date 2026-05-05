@@ -1,4 +1,4 @@
-const CACHE_NAME = 'minutes-maker-v8';
+const CACHE_NAME = 'memomaru-v1';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './manifest.json', './icons/icon.svg'];
 
 self.addEventListener('install', e => {
