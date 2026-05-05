@@ -175,6 +175,8 @@ const S = {
   },
   generating: false,
   streamText: '',
+  editingMinutes: false,
+  editingTranscript: false,
   installPrompt: null,
   updateAvailable: false,
   swRegistration: null
@@ -316,10 +318,17 @@ function vMinutes() {
             <div class="generating-text">議事録を生成中…</div>
             <div class="generating-preview" id="streamPreview">${esc(S.streamText)}</div>
           </div>
+        ` : S.editingMinutes ? `
+          <textarea class="edit-textarea" id="minutesEditArea">${esc(m?.minutes || '')}</textarea>
+          <div class="edit-actions">
+            <button class="btn btn-ghost js-cancel-edit-minutes">キャンセル</button>
+            <button class="btn btn-primary js-save-edit-minutes">💾&ensp;保存</button>
+          </div>
         ` : `
           <div class="minutes-content">${renderMinutesHTML(m?.minutes || '')}</div>
           <div class="minutes-actions">
             <button class="btn btn-ghost js-view-transcript-from-minutes">文字起こし</button>
+            <button class="btn btn-ghost js-edit-minutes">✏&ensp;編集</button>
             <button class="btn btn-secondary js-regenerate">再生成</button>
           </div>
         `}
@@ -345,8 +354,20 @@ function renderMinutesHTML(text) {
 function vTranscript() {
   const m = S.currentMeeting;
   const rawSegs = m?.rawSegments || [];
+  const hasSpeakers = (m?.transcript || []).join('').match(/話者[A-Z]:/);
+
   let content;
-  if (rawSegs.length) {
+  if (S.editingTranscript) {
+    const fullText = rawSegs.length
+      ? rawSegs.map(s => `[${s.ts}]\n${s.text}`).join('\n\n')
+      : (m?.transcript || []).join('\n\n');
+    content = `
+      <textarea class="edit-textarea" id="transcriptEditArea">${esc(fullText)}</textarea>
+      <div class="edit-actions">
+        <button class="btn btn-ghost js-cancel-edit-transcript">キャンセル</button>
+        <button class="btn btn-primary js-save-edit-transcript">💾&ensp;保存</button>
+      </div>`;
+  } else if (rawSegs.length) {
     content = rawSegs.map(s =>
       `<div class="raw-segment"><span class="ts-label">[${esc(s.ts)}]</span><div class="ts-text">${esc(s.text)}</div></div>`
     ).join('');
@@ -369,9 +390,13 @@ function vTranscript() {
         ${m?.participants ? `<span>👥 ${esc(m.participants)}</span>` : ''}
       </div>
       <div class="transcript-full">${content}</div>
-      ${!m?.minutes && m?.transcript?.length
-        ? `<button class="btn btn-primary btn-large js-generate-now">📝&ensp;議事録を生成</button>`
-        : ''}
+      ${!S.editingTranscript ? `
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${hasSpeakers ? `<button class="btn btn-ghost js-assign-speakers">👤&ensp;話者名を設定</button>` : ''}
+          <button class="btn btn-ghost js-edit-transcript">✏&ensp;編集</button>
+          ${!m?.minutes && m?.transcript?.length
+            ? `<button class="btn btn-primary js-generate-now">📝&ensp;議事録を生成</button>` : ''}
+        </div>` : ''}
     </main>
   `;
 }
@@ -723,8 +748,46 @@ function bind() {
   on('.js-copy-minutes', 'click', () => {
     navigator.clipboard.writeText(S.currentMeeting?.minutes || '').then(() => toast('コピーしました'));
   });
-  on('.js-view-transcript-from-minutes', 'click', () => go('transcript'));
+  on('.js-view-transcript-from-minutes', 'click', () => { S.editingMinutes = false; go('transcript'); });
   on('.js-regenerate', 'click', () => generateWithModeModal(S.currentMeeting));
+
+  // 議事録 編集
+  on('.js-edit-minutes', 'click', () => { S.editingMinutes = true; render(); });
+  on('.js-cancel-edit-minutes', 'click', () => { S.editingMinutes = false; render(); });
+  on('.js-save-edit-minutes', 'click', async () => {
+    const val = document.getElementById('minutesEditArea')?.value;
+    if (val == null) return;
+    S.currentMeeting.minutes = val;
+    await putMeeting(S.currentMeeting);
+    S.meetings = await fetchAllMeetings();
+    S.editingMinutes = false;
+    toast('議事録を保存しました');
+    render();
+  });
+
+  // 文字起こし 編集
+  on('.js-edit-transcript', 'click', () => { S.editingTranscript = true; render(); });
+  on('.js-cancel-edit-transcript', 'click', () => { S.editingTranscript = false; render(); });
+  on('.js-save-edit-transcript', 'click', async () => {
+    const val = document.getElementById('transcriptEditArea')?.value;
+    if (val == null) return;
+    // タイムスタンプ形式 "[MM:SS]\ntext" をパースして rawSegments 再構築
+    const blocks = val.split(/\n\n+/);
+    const rawSegs = [], plainSegs = [];
+    for (const block of blocks) {
+      const m = block.match(/^\[(\d+:\d+(?::\d+)?)\]\n?([\s\S]*)/);
+      if (m) { rawSegs.push({ ts: m[1], elapsed: 0, text: m[2].trim() }); plainSegs.push(m[2].trim()); }
+      else if (block.trim()) { plainSegs.push(block.trim()); }
+    }
+    S.currentMeeting.rawSegments = rawSegs;
+    S.currentMeeting.transcript = plainSegs;
+    await putMeeting(S.currentMeeting);
+    S.meetings = await fetchAllMeetings();
+    S.editingTranscript = false;
+    toast('文字起こしを保存しました');
+    render();
+  });
+  on('.js-assign-speakers', 'click', () => openSpeakerNamesModal(S.currentMeeting));
 
   on('.js-copy-transcript', 'click', () => {
     const m = S.currentMeeting;
@@ -905,6 +968,8 @@ async function handleBack() {
     if (!confirm('録音中です。停止して戻りますか？')) return;
     stopRecording();
   }
+  S.editingMinutes = false;
+  S.editingTranscript = false;
   S.meetings = await fetchAllMeetings();
   go('home');
 }
@@ -1368,6 +1433,58 @@ async function autoSave() {
   await putMeeting(S.currentMeeting).catch(() => {});
 }
 
+// ── Speaker name assignment modal ─────────────────────────────────────────────
+function openSpeakerNamesModal(meeting) {
+  const allText = [...(meeting.transcript || []), ...(meeting.rawSegments || []).map(s => s.text)].join('\n');
+  const labels = [...new Set((allText.match(/話者([A-Z])/g) || []).map(m => m.replace('話者', '')))].sort();
+  if (!labels.length) { toast('話者ラベルが見つかりませんでした'); return; }
+
+  const savedNames = meeting.speakerNames || {};
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="modal-heading">話者名を設定</div>
+      <div class="settings-hint">話者ラベルに人名を割り当てます。文字起こし・議事録の両方に適用されます。</div>
+      <div id="speakerRows">
+        ${labels.map(l => `
+          <div class="speaker-row">
+            <span class="speaker-label-badge">話者${l}</span>
+            <input class="input" data-label="${l}" placeholder="例: 山田" value="${esc(savedNames[l] || '')}">
+          </div>`).join('')}
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="speakerCancel">キャンセル</button>
+        <button class="btn btn-primary" id="speakerApply">適用</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  overlay.querySelector('#speakerCancel').addEventListener('click', close);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  overlay.querySelector('#speakerApply').addEventListener('click', async () => {
+    const names = {};
+    overlay.querySelectorAll('input[data-label]').forEach(inp => {
+      const v = inp.value.trim();
+      if (v) names[inp.dataset.label] = v;
+    });
+    meeting.speakerNames = names;
+    // テキスト内の「話者X:」を「名前:」に置換
+    function replaceSpeakers(text) {
+      return text.replace(/話者([A-Z]):/g, (_, l) => names[l] ? `${names[l]}:` : `話者${l}:`);
+    }
+    meeting.transcript = (meeting.transcript || []).map(replaceSpeakers);
+    meeting.rawSegments = (meeting.rawSegments || []).map(s => ({ ...s, text: replaceSpeakers(s.text) }));
+    if (meeting.minutes) meeting.minutes = replaceSpeakers(meeting.minutes);
+    await putMeeting(meeting);
+    S.meetings = await fetchAllMeetings();
+    close();
+    toast('話者名を適用しました');
+    render();
+  });
+}
+
 // ── Generate with mode modal ──────────────────────────────────────────────────
 function generateWithModeModal(meeting) {
   const curMode = getMode();
@@ -1543,7 +1660,7 @@ async function generateChunked(transcript, meeting, apiKey) {
   return callGemini(buildPrompt(meeting, `[長時間会議・分割要約]\n\n${summaries.join('\n\n')}`), apiKey);
 }
 
-async function callGemini(prompt, apiKey) {
+async function callGemini(prompt, apiKey, retries = 3) {
   const model = localStorage.getItem('geminiModel') || 'gemini-2.5-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
 
@@ -1558,7 +1675,17 @@ async function callGemini(prompt, apiKey) {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `API エラー (HTTP ${res.status})`);
+    const msg = err.error?.message || `API エラー (HTTP ${res.status})`;
+    // 503/429 (高負荷・レート制限) は自動リトライ
+    if (retries > 0 && (res.status === 503 || res.status === 429)) {
+      const wait = res.status === 429 ? 5000 : 3000;
+      console.warn(`[callGemini] ${res.status} — ${wait}ms 後にリトライ (残り${retries}回)`);
+      const preview = document.getElementById('streamPreview');
+      if (preview) preview.textContent = `⏳ サーバー混雑中。${wait/1000}秒後に自動リトライ…`;
+      await new Promise(r => setTimeout(r, wait));
+      return callGemini(prompt, apiKey, retries - 1);
+    }
+    throw new Error(msg);
   }
 
   const reader = res.body.getReader();

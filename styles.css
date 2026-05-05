@@ -30,7 +30,7 @@ body {
 .app-header {
   background: linear-gradient(135deg, #c2410c 0%, #f97316 100%);
   color: var(--header-text);
-  padding: 16px 16px;
+  padding: 18px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -40,15 +40,15 @@ body {
   box-shadow: 0 3px 12px rgba(194,65,12,0.35);
 }
 .app-title {
-  font-size: 22px;
+  font-size: 28px;
   font-weight: 800;
   flex: 1;
   text-align: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  letter-spacing: -0.01em;
-  text-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  letter-spacing: -0.02em;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.25);
 }
 
 /* ── Buttons ── */
@@ -81,13 +81,13 @@ body {
   background: none;
   border: none;
   color: var(--header-text);
-  font-size: 22px;
+  font-size: 28px;
   cursor: pointer;
-  padding: 6px 8px;
+  padding: 4px 6px;
   border-radius: 6px;
   transition: background 0.15s;
-  min-width: 40px;
-  min-height: 40px;
+  min-width: 44px;
+  min-height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -110,9 +110,9 @@ body {
 /* ── Home ── */
 .new-meeting-btn {
   background: linear-gradient(135deg, #ea580c, #fb923c);
-  font-size: 16px;
+  font-size: 20px;
   font-weight: 700;
-  padding: 18px;
+  padding: 22px 18px;
   box-shadow: 0 4px 14px rgba(234,88,12,0.35);
 }
 .new-meeting-btn:hover { background: linear-gradient(135deg, #c2410c, #f97316); }
@@ -414,6 +414,30 @@ body {
 .status-ok      { background: #dcfce7; color: #166534; }
 .status-err     { background: #fee2e2; color: #991b1b; }
 .status-loading { background: var(--primary-light); color: var(--primary-dark); }
+
+/* ── Edit area ── */
+.edit-textarea {
+  width: 100%; min-height: 300px; max-height: 60vh;
+  padding: 12px; border: 1.5px solid var(--primary);
+  border-radius: 8px; font-size: 14px; line-height: 1.8;
+  font-family: inherit; color: var(--text); background: var(--bg);
+  resize: vertical; outline: none;
+}
+.edit-actions {
+  display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px;
+}
+
+/* ── Speaker assign ── */
+.speaker-row {
+  display: flex; align-items: center; gap: 10px; padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.speaker-row:last-child { border-bottom: none; }
+.speaker-label-badge {
+  font-size: 12px; font-weight: 700; color: var(--primary-dark);
+  background: var(--primary-light); border-radius: 6px;
+  padding: 3px 10px; white-space: nowrap; min-width: 64px; text-align: center;
+}
 
 /* ── Toast ── */
 .toast {
