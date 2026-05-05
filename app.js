@@ -355,42 +355,46 @@ function renderMinutesHTML(text) {
 // ── Rich-text clipboard copy ──────────────────────────────────────────────────
 // text/html + text/plain を同時に書き込む。Word / Google Docs に貼ると書式が再現される。
 async function copyToClipboard(plain, html) {
-  // ① contenteditable に HTML を入れて選択 → copy イベントで両フォーマットを書き込む
-  //    Android Chrome でも「選択状態の execCommand('copy')」はユーザージェスチャー内なら動く。
-  //    copy イベントで clipboardData を上書きすることで text/html + text/plain を両立。
-  let intercepted = false;
-  const el = document.createElement('div');
-  el.contentEditable = 'true';
-  el.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;overflow:hidden';
-  el.innerHTML = html;
-  document.body.appendChild(el);
+  const isAndroid = /Android/i.test(navigator.userAgent);
 
-  // コンテンツを選択
-  const range = document.createRange();
-  range.selectNodeContents(el);
-  const sel = window.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(range);
-  el.focus();
+  // ── デスクトップ: copy イベントインターセプト ──────────────────────────────
+  // contenteditable に HTML をセット→選択→execCommand('copy') で copy イベントを発火させ、
+  // clipboardData.setData で text/html + text/plain を両方書き込む。
+  // Google Docs / Notion desktop / Word はこの経路で書式を受け取る。
+  // Android は clipboardData.setData('text/plain') がサイレント失敗するケースがあり、
+  // ブラウザが HTML を直接コピー→アプリがテキスト変換→改行消滅するため除外。
+  if (!isAndroid) {
+    let intercepted = false;
+    const el = document.createElement('div');
+    el.contentEditable = 'true';
+    el.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;overflow:hidden';
+    el.innerHTML = html;
+    document.body.appendChild(el);
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    el.focus();
+    const onCopy = e => {
+      try {
+        e.clipboardData.setData('text/html',  html);
+        e.clipboardData.setData('text/plain', plain);
+        e.preventDefault();
+        intercepted = true;
+      } catch (_) {}
+    };
+    document.addEventListener('copy', onCopy);
+    try { document.execCommand('copy'); } catch (_) {}
+    document.removeEventListener('copy', onCopy);
+    sel.removeAllRanges();
+    document.body.removeChild(el);
+    if (intercepted) { toast('コピーしました'); return; }
+  }
 
-  const onCopy = e => {
-    try {
-      e.clipboardData.setData('text/html',  html);
-      e.clipboardData.setData('text/plain', plain);
-      e.preventDefault();
-      intercepted = true;
-    } catch (_) {}
-  };
-  document.addEventListener('copy', onCopy);
-  try { document.execCommand('copy'); } catch (_) {}
-  document.removeEventListener('copy', onCopy);
-
-  sel.removeAllRanges();
-  document.body.removeChild(el);
-
-  if (intercepted) { toast('コピーしました'); return; }
-
-  // ② ClipboardItem (Chrome 76+ / Android Chrome — HTTPS または localhost 必須)
+  // ── Android + フォールバック: ClipboardItem API ───────────────────────────
+  // text/html と text/plain を明示的に両方セット。
+  // Android Chrome 98+ / 対応 WebView であればアプリが好きな方を選択できる。
   try {
     if (navigator.clipboard?.write && window.ClipboardItem) {
       await navigator.clipboard.write([
@@ -404,7 +408,7 @@ async function copyToClipboard(plain, html) {
     }
   } catch (_) {}
 
-  // ③ プレーンテキスト最終フォールバック
+  // ── 最終フォールバック: プレーンテキスト（改行あり）─────────────────────
   try { await navigator.clipboard.writeText(plain); toast('コピーしました'); }
   catch { toast('コピーに失敗しました'); }
 }
