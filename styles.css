@@ -438,6 +438,13 @@ body {
   background: var(--primary-light); border-radius: 6px;
   padding: 3px 10px; white-space: nowrap; min-width: 64px; text-align: center;
 }
+.speaker-tag {
+  display: inline-block;
+  color: var(--primary-dark); font-weight: 700;
+  background: var(--primary-light);
+  border-radius: 4px; padding: 0 4px;
+  margin-right: 2px;
+}
 
 /* ── Toast ── */
 .toast {

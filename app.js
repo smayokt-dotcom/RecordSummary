@@ -339,14 +339,16 @@ function vMinutes() {
 
 function renderMinutesHTML(text) {
   if (!text) return '<p style="color:var(--text-muted)">議事録がありません</p>';
+  const spk = S.currentMeeting?.speakerNames;
   return text.split('\n').map(line => {
     const t = line.trim();
     if (!t) return '<div class="m-blank"></div>';
-    if (/^【.*】$/.test(t) && !/^■/.test(t)) return `<div class="m-header">${esc(t)}</div>`;
-    if (/^■/.test(t)) return `<div class="m-section">${esc(t)}</div>`;
-    if (/^[・•]/.test(t)) return `<div class="m-item">${esc(t)}</div>`;
-    if (/^【.+】/.test(t)) return `<div class="m-topic">${esc(t)}</div>`;
-    return `<div class="m-line">${esc(t)}</div>`;
+    const e = wrapSpeakers(esc(t), spk);
+    if (/^【.*】$/.test(t) && !/^■/.test(t)) return `<div class="m-header">${e}</div>`;
+    if (/^■/.test(t)) return `<div class="m-section">${e}</div>`;
+    if (/^[・•]/.test(t)) return `<div class="m-item">${e}</div>`;
+    if (/^【.+】/.test(t)) return `<div class="m-topic">${e}</div>`;
+    return `<div class="m-line">${e}</div>`;
   }).join('');
 }
 
@@ -354,7 +356,8 @@ function renderMinutesHTML(text) {
 function vTranscript() {
   const m = S.currentMeeting;
   const rawSegs = m?.rawSegments || [];
-  const hasSpeakers = (m?.transcript || []).join('').match(/話者[A-Z]:/);
+  const _allTransText = [...(m?.transcript || []), ...(m?.rawSegments || []).map(s => s.text)].join('');
+  const hasSpeakers = _allTransText.match(/話者[A-Z]:/) || Object.keys(m?.speakerNames || {}).length > 0;
 
   let content;
   if (S.editingTranscript) {
@@ -368,12 +371,14 @@ function vTranscript() {
         <button class="btn btn-primary js-save-edit-transcript">💾&ensp;保存</button>
       </div>`;
   } else if (rawSegs.length) {
+    const spk = m?.speakerNames;
     content = rawSegs.map(s =>
-      `<div class="raw-segment"><span class="ts-label">[${esc(s.ts)}]</span><div class="ts-text">${esc(s.text)}</div></div>`
+      `<div class="raw-segment"><span class="ts-label">[${esc(s.ts)}]</span><div class="ts-text">${wrapSpeakers(esc(s.text), spk)}</div></div>`
     ).join('');
   } else {
     const text = (m?.transcript || []).join('\n\n');
-    content = `<div style="white-space:pre-wrap">${esc(text) || '文字起こしデータがありません'}</div>`;
+    const spk = m?.speakerNames;
+    content = `<div style="white-space:pre-wrap">${wrapSpeakers(esc(text), spk) || '文字起こしデータがありません'}</div>`;
   }
 
   return `
@@ -1436,7 +1441,9 @@ async function autoSave() {
 // ── Speaker name assignment modal ─────────────────────────────────────────────
 function openSpeakerNamesModal(meeting) {
   const allText = [...(meeting.transcript || []), ...(meeting.rawSegments || []).map(s => s.text)].join('\n');
-  const labels = [...new Set((allText.match(/話者([A-Z])/g) || []).map(m => m.replace('話者', '')))].sort();
+  const textLabels = (allText.match(/話者([A-Z])/g) || []).map(m => m.replace('話者', ''));
+  const savedLabels = Object.keys(meeting.speakerNames || {});
+  const labels = [...new Set([...textLabels, ...savedLabels])].sort();
   if (!labels.length) { toast('話者ラベルが見つかりませんでした'); return; }
 
   const savedNames = meeting.speakerNames || {};
@@ -1524,6 +1531,37 @@ function generateWithModeModal(meeting) {
   overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
 }
 
+// ── Preamble stripper ────────────────────────────────────────────────────────
+function removePreamble(text) {
+  // Gemini がたまに「承知いたしました。…」などの前置きを付けることがある。
+  // 最初の【 または ■ より前にある行が 5 行以下なら前置きとみなして除去する。
+  const idx = text.search(/^[【■]/m);
+  if (idx <= 0) return text;
+  const before = text.slice(0, idx);
+  const lineCount = before.split('\n').filter(l => l.trim()).length;
+  return lineCount <= 5 ? text.slice(idx) : text;
+}
+
+// ── Speaker label colorizer ───────────────────────────────────────────────────
+// escapedHtml: already-HTML-escaped string (話者X: は &lt; などを含まない想定)
+// speakerNames: { A: '山田', B: '鈴木', … }
+function wrapSpeakers(escapedHtml, speakerNames) {
+  // 「話者X:」パターンをラップ
+  let result = escapedHtml.replace(/話者([A-Z]):/g,
+    (_, l) => `<span class="speaker-tag">話者${l}:</span>`);
+  // 割り当て済みの人名もラップ（「山田:」など）
+  if (speakerNames) {
+    for (const name of Object.values(speakerNames)) {
+      if (!name) continue;
+      // 行頭近くにある「名前:」だけを対象にする（本文中の固有名詞は触らない）
+      const safe = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      result = result.replace(new RegExp(`(?<![\\w\\u3041-\\u9FFF])${safe}:`, 'g'),
+        `<span class="speaker-tag">${name}:</span>`);
+    }
+  }
+  return result;
+}
+
 // ── Gemini API ───────────────────────────────────────────────────────────────
 async function doGenerate(meeting) {
   let apiKey = localStorage.getItem('geminiApiKey');
@@ -1548,9 +1586,13 @@ async function doGenerate(meeting) {
   }
 
   try {
-    const text = transcript.length > 80000
+    let text = transcript.length > 80000
       ? await generateChunked(transcript, meeting, apiKey)
       : await callGemini(buildPrompt(meeting, transcript), apiKey);
+
+    text = removePreamble(text);
+    // 日時が切れた場合に正しい値で上書き
+    text = text.replace(/【日時】[^\n]*/m, `【日時】${fmtDateTime(meeting.startTime, meeting.endTime)}`);
 
     meeting.minutes = text;
     await putMeeting(meeting);

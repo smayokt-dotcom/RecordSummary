@@ -1,4 +1,4 @@
-const CACHE_NAME = 'memomaru-v3';
+const CACHE_NAME = 'memomaru-v4';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './manifest.json', './icons/icon.svg'];
 
 self.addEventListener('install', e => {
