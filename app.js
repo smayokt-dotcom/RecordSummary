@@ -355,24 +355,44 @@ function renderMinutesHTML(text) {
 // ── Rich-text clipboard copy ──────────────────────────────────────────────────
 // text/html + text/plain を同時に書き込む。Word / Google Docs に貼ると書式が再現される。
 async function copyToClipboard(plain, html) {
-  // ① copy イベントをインターセプトして clipboardData に直接セット。
-  //    Google Docs / Notion / Word はこの経路の text/html を書式付きで貼り付ける。
-  //    （Quill / ProseMirror などのエディタと同じ方式）
+  // ① contenteditable に HTML を入れて選択 → copy イベントで両フォーマットを書き込む
+  //    Android Chrome でも「選択状態の execCommand('copy')」はユーザージェスチャー内なら動く。
+  //    copy イベントで clipboardData を上書きすることで text/html + text/plain を両立。
   let intercepted = false;
+  const el = document.createElement('div');
+  el.contentEditable = 'true';
+  el.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;overflow:hidden';
+  el.innerHTML = html;
+  document.body.appendChild(el);
+
+  // コンテンツを選択
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  el.focus();
+
   const onCopy = e => {
-    e.preventDefault();
-    e.clipboardData.setData('text/html',  html);
-    e.clipboardData.setData('text/plain', plain);
-    intercepted = true;
+    try {
+      e.clipboardData.setData('text/html',  html);
+      e.clipboardData.setData('text/plain', plain);
+      e.preventDefault();
+      intercepted = true;
+    } catch (_) {}
   };
   document.addEventListener('copy', onCopy);
-  document.execCommand('copy');
+  try { document.execCommand('copy'); } catch (_) {}
   document.removeEventListener('copy', onCopy);
+
+  sel.removeAllRanges();
+  document.body.removeChild(el);
+
   if (intercepted) { toast('コピーしました'); return; }
 
-  // ② ClipboardItem (非同期 Clipboard API — HTTPS 必須)
+  // ② ClipboardItem (Chrome 76+ / Android Chrome — HTTPS または localhost 必須)
   try {
-    if (window.ClipboardItem) {
+    if (navigator.clipboard?.write && window.ClipboardItem) {
       await navigator.clipboard.write([
         new ClipboardItem({
           'text/plain': new Blob([plain], { type: 'text/plain' }),
