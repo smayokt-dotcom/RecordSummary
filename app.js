@@ -224,7 +224,7 @@ function vHome() {
   return `
     <header class="app-header">
       <div style="min-width:36px"></div>
-      <h1 class="app-title">議事録メーカー</h1>
+      <h1 class="app-title">メモまる</h1>
       <button class="btn-icon js-settings" title="設定">⚙</button>
     </header>
     <main class="main-content">
@@ -527,7 +527,7 @@ function vSettings() {
       </div>
 
       <div class="settings-section app-info">
-        <div>議事録メーカー v1.0</div>
+        <div>メモまる v1.0</div>
         <div class="settings-hint">文字起こし: Gemini Audio API<br>議事録生成: Gemini API</div>
       </div>
     </main>

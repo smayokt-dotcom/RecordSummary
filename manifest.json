@@ -1,6 +1,6 @@
 {
-  "name": "議事録メーカー",
-  "short_name": "議事録",
+  "name": "メモまる",
+  "short_name": "メモまる",
   "description": "録音から議事録を自動生成するアプリ",
   "start_url": "./",
   "display": "standalone",

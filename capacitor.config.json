@@ -1,6 +1,6 @@
 {
   "appId": "com.recordsummary.app",
-  "appName": "議事録メーカー",
+  "appName": "メモまる",
   "webDir": "www",
   "server": {
     "androidScheme": "https"
