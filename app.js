@@ -379,7 +379,7 @@ function vTranscript() {
 // ── View: Settings ───────────────────────────────────────────────────────────
 function vSettings() {
   const key = localStorage.getItem('geminiApiKey') || '';
-  const savedModel = localStorage.getItem('geminiModel') || 'gemini-2.0-flash';
+  const savedModel = localStorage.getItem('geminiModel') || 'gemini-2.5-flash';
   const models = loadStoredModels();
   const lang = localStorage.getItem('speechLang') || 'ja-JP';
   const langs = [
@@ -416,7 +416,7 @@ function vSettings() {
             ${models.map(m => `<option value="${esc(m.id)}"${m.id === savedModel ? ' selected' : ''}>${esc(m.displayName)}</option>`).join('')}
           </select>
         ` : `
-          <input type="text" id="modelSelect" class="input" placeholder="gemini-2.0-flash" value="${esc(savedModel)}">
+          <input type="text" id="modelSelect" class="input" placeholder="gemini-2.5-flash" value="${esc(savedModel)}">
           <div class="settings-hint">APIキーを入力して「読み込む」を押すとモデル一覧を取得できます</div>
         `}
         <div class="input-row" style="margin-top:4px">
@@ -872,7 +872,7 @@ function saveModel() {
 
 async function testGeminiModel() {
   const apiKey = document.getElementById('apiKeyInput')?.value.trim() || localStorage.getItem('geminiApiKey');
-  const model = document.getElementById('modelSelect')?.value?.trim() || localStorage.getItem('geminiModel') || 'gemini-2.0-flash';
+  const model = document.getElementById('modelSelect')?.value?.trim() || localStorage.getItem('geminiModel') || 'gemini-2.5-flash';
   if (!apiKey) { setStatusEl('testResult', 'err', 'APIキーを入力してください'); return; }
 
   setStatusEl('testResult', 'loading', 'テスト中…');
@@ -1132,18 +1132,14 @@ async function blobToBase64(blob) {
 async function transcribeAudio(base64, mimeType) {
   const apiKey = localStorage.getItem('geminiApiKey');
   if (!apiKey) throw new Error('APIキーが設定されていません');
-  const model = localStorage.getItem('geminiModel') || 'gemini-2.0-flash';
+  const model = localStorage.getItem('geminiModel') || 'gemini-2.5-flash';
   const lang = localStorage.getItem('speechLang') || 'ja-JP';
   const langName = { 'ja-JP':'日本語','en-US':'英語','en-GB':'英語','zh-CN':'中国語','ko-KR':'韓国語' }[lang] || '日本語';
   const diarize = localStorage.getItem('speakerDiarization') === 'true';
   const ctx = S.rec.segments.slice(-2).join('').slice(-400);
 
-  // 単語辞書ヒント
-  const dict = loadWordDict();
-  const dictHint = dict.length
-    ? `\n\n専門用語・固有名詞の対応表（以下の表記を優先すること）:\n${dict.map(d => `「${d.from}」→「${d.to}」`).join('\n')}`
-    : '';
-
+  // ※ 辞書ヒントはプロンプトに含めない（音声が無音・希薄な場合にGeminiが辞書語を幻覚するバグを防ぐ）
+  // 辞書適用は後処理（applyWordDict）のみで行う
   let prompt;
   if (diarize) {
     prompt = `この音声を${langName}で、話者ごとにラベルを付けて文字起こしして。
@@ -1151,11 +1147,13 @@ async function transcribeAudio(base64, mimeType) {
 ${ctx
   ? `直前の文脈（ここに登場した話者ラベルを必ず引き継いで一貫性を保つこと）:\n「…${ctx}」`
   : '初めて登場する話者から順に話者A・話者B・話者Cと割り当てること。'}
-話し言葉そのままで、句読点を適切に追加。${dictHint}
+話し言葉そのままで、句読点を適切に追加。
+音声が無音または聞き取れない場合は空文字のみを返すこと。
 文字起こしテキストのみ出力すること。`;
   } else {
     prompt = `この音声を${langName}で正確に文字起こしして。${ctx ? `直前の文脈:「…${ctx}」` : ''}
-話し言葉そのままで、句読点を適切に追加。複数話者もそのまま書き起こす。${dictHint}
+話し言葉そのままで、句読点を適切に追加。複数話者もそのまま書き起こす。
+音声が無音または聞き取れない場合は空文字のみを返すこと。
 文字起こしテキストのみ出力すること。`;
   }
 
@@ -1546,7 +1544,7 @@ async function generateChunked(transcript, meeting, apiKey) {
 }
 
 async function callGemini(prompt, apiKey) {
-  const model = localStorage.getItem('geminiModel') || 'gemini-2.0-flash';
+  const model = localStorage.getItem('geminiModel') || 'gemini-2.5-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
 
   const res = await fetch(url, {
