@@ -353,9 +353,42 @@ body {
   display: flex; flex-direction: column; gap: 16px;
   animation: slideUp 0.2s;
 }
+.modal-wide { max-width: 520px; }
 @keyframes slideUp { from { transform:translateY(20px); opacity:0; } to { transform:translateY(0); opacity:1; } }
 .modal-heading { font-size: 18px; font-weight: 700; }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+/* New meeting modal settings */
+.modal-setting-row {
+  display: flex; align-items: center; gap: 10px;
+}
+.modal-setting-label {
+  font-size: 13px; color: var(--text-muted);
+  white-space: nowrap; min-width: 96px;
+}
+.modal-setting-select { flex: 1; }
+
+/* Generate mode picker */
+.mode-options { display: flex; flex-direction: column; gap: 8px; }
+.mode-option {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 12px; border-radius: 10px;
+  border: 1.5px solid var(--border);
+  cursor: pointer; transition: border-color 0.15s, background 0.15s;
+}
+.mode-option:has(input:checked) {
+  border-color: var(--primary); background: #eff6ff;
+}
+.mode-option input[type="radio"] { margin-top: 3px; accent-color: var(--primary); flex-shrink: 0; }
+.mode-option-body { display: flex; flex-direction: column; gap: 2px; }
+.mode-option-body strong { font-size: 14px; }
+.mode-option-body span { font-size: 12px; color: var(--text-muted); }
+
+/* Dict list modal */
+.dict-modal-body {
+  max-height: 50vh; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 8px;
+}
 
 /* ── Word Dict Table ── */
 .dict-table {

@@ -259,10 +259,7 @@ function vRecord() {
     controls = `
       ${rec.segments.length
         ? `<button class="btn btn-primary btn-large js-start-resume">🎙&ensp;録音を続ける</button>
-           <div class="generate-row">
-             ${modeSelectHTML('inlineModeSelectRecord')}
-             <button class="btn btn-secondary btn-large js-generate-now">📝&ensp;議事録を生成</button>
-           </div>`
+           <button class="btn btn-secondary btn-large js-generate-now">📝&ensp;議事録を生成</button>`
         : `<button class="btn btn-primary btn-large js-start">🎙&ensp;録音開始</button>`}
     `;
   }
@@ -323,10 +320,7 @@ function vMinutes() {
           <div class="minutes-content">${renderMinutesHTML(m?.minutes || '')}</div>
           <div class="minutes-actions">
             <button class="btn btn-ghost js-view-transcript-from-minutes">文字起こし</button>
-            <div style="display:flex;gap:8px;align-items:center;flex:1;justify-content:flex-end">
-              ${modeSelectHTML('inlineModeSelectMinutes')}
-              <button class="btn btn-secondary js-regenerate">再生成</button>
-            </div>
+            <button class="btn btn-secondary js-regenerate">再生成</button>
           </div>
         `}
       </div>
@@ -500,9 +494,9 @@ function vSettings() {
       <div class="settings-section">
         <div class="settings-label">単語辞書（誤変換修正）</div>
         <div class="settings-hint">専門用語・固有名詞の誤変換を登録。Geminiプロンプトへのヒント注入と後処理置換の両方に適用されます。</div>
-        <div id="wordDictList"></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn btn-primary js-add-dict-entry" style="width:auto">＋ 追加</button>
+          <button class="btn btn-ghost js-list-dict" style="width:auto">📋 一覧</button>
           <button class="btn btn-ghost js-export-dict" style="width:auto">📤 エクスポート</button>
           <button class="btn btn-ghost js-import-dict" style="width:auto">📥 インポート</button>
         </div>
@@ -592,7 +586,62 @@ function renderWordDictTable() {
   });
 }
 
-function openDictEntryModal(idx = null) {
+function openDictListModal() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.zIndex = '55';
+  document.body.appendChild(overlay);
+
+  function refresh() {
+    const dict = loadWordDict();
+    overlay.innerHTML = `
+      <div class="modal modal-wide">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div class="modal-heading" style="margin:0">単語辞書</div>
+          <span style="font-size:13px;color:var(--text-muted)">${dict.length}件</span>
+        </div>
+        <div class="dict-modal-body">
+          ${dict.length ? `
+            <table class="dict-table">
+              <thead><tr><th>変換前</th><th>変換後</th><th></th></tr></thead>
+              <tbody>
+                ${dict.map((e, i) => `
+                  <tr>
+                    <td class="dict-cell-from">${esc(e.from)}</td>
+                    <td class="dict-cell-to">${esc(e.to)}</td>
+                    <td class="dict-cell-actions">
+                      <button class="btn btn-sm btn-ghost dict-edit-btn" data-idx="${i}">編集</button>
+                      <button class="btn btn-sm btn-ghost dict-del-btn" data-idx="${i}" style="color:var(--danger);border-color:var(--danger)">削除</button>
+                    </td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>` : '<div class="dict-empty settings-hint">エントリがありません。「＋ 追加」で登録できます。</div>'}
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" id="dictListClose">閉じる</button>
+          <button class="btn btn-primary" id="dictListAdd">＋ 追加</button>
+        </div>
+      </div>`;
+
+    overlay.querySelector('#dictListClose').addEventListener('click', () => overlay.remove());
+    overlay.querySelector('#dictListAdd').addEventListener('click', () => openDictEntryModal(null, refresh));
+    overlay.querySelectorAll('.dict-edit-btn').forEach(btn =>
+      btn.addEventListener('click', () => openDictEntryModal(parseInt(btn.dataset.idx), refresh)));
+    overlay.querySelectorAll('.dict-del-btn').forEach(btn =>
+      btn.addEventListener('click', () => {
+        const i = parseInt(btn.dataset.idx);
+        const d = loadWordDict();
+        if (!confirm(`「${d[i].from}」→「${d[i].to}」を削除しますか？`)) return;
+        d.splice(i, 1);
+        saveWordDict(d);
+        refresh();
+      }));
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  }
+  refresh();
+}
+
+function openDictEntryModal(idx = null, onSave = null) {
   const dict = loadWordDict();
   const entry = idx !== null ? dict[idx] : { from: '', to: '' };
   const isNew = idx === null;
@@ -625,13 +674,9 @@ function openDictEntryModal(idx = null) {
     const to   = document.getElementById('dictToInput').value.trim();
     if (!from) { alert('変換前の語を入力してください'); return; }
     const d = loadWordDict();
-    if (isNew) {
-      d.push({ from, to });
-    } else {
-      d[idx] = { from, to };
-    }
+    if (isNew) { d.push({ from, to }); } else { d[idx] = { from, to }; }
     saveWordDict(d);
-    renderWordDictTable();
+    if (onSave) onSave();
     close();
     toast(isNew ? 'エントリを追加しました' : 'エントリを更新しました');
   };
@@ -658,7 +703,7 @@ function bind() {
   });
   onAll('.js-generate', 'click', async btn => {
     S.currentMeeting = await getMeeting(btn.dataset.id);
-    doGenerate(S.currentMeeting);
+    generateWithModeModal(S.currentMeeting);
   });
   onAll('.js-edit', 'click', btn => openEditMeetingModal(btn.dataset.id));
   onAll('.delete-btn', 'click', async btn => {
@@ -673,13 +718,13 @@ function bind() {
   on('.js-pause', 'click', pauseRecording);
   on('.js-resume', 'click', resumeRecording);
   on('.js-stop', 'click', stopRecording);
-  on('.js-generate-now', 'click', () => doGenerate(S.currentMeeting));
+  on('.js-generate-now', 'click', () => generateWithModeModal(S.currentMeeting));
 
   on('.js-copy-minutes', 'click', () => {
     navigator.clipboard.writeText(S.currentMeeting?.minutes || '').then(() => toast('コピーしました'));
   });
   on('.js-view-transcript-from-minutes', 'click', () => go('transcript'));
-  on('.js-regenerate', 'click', () => doGenerate(S.currentMeeting));
+  on('.js-regenerate', 'click', () => generateWithModeModal(S.currentMeeting));
 
   on('.js-copy-transcript', 'click', () => {
     const m = S.currentMeeting;
@@ -746,14 +791,11 @@ function bind() {
     localStorage.setItem('compressor', val);
     toast('コンプレッサー設定を保存しました');
   });
-  // インラインモードセレクター（変更したらlocalStorageに保存）
-  on('#inlineModeSelectRecord',  'change', e => localStorage.setItem('minutesMode', e.target.value));
-  on('#inlineModeSelectMinutes', 'change', e => localStorage.setItem('minutesMode', e.target.value));
-
   // 単語辞書
-  on('.js-export-dict', 'click', exportWordDict);
-  on('.js-import-dict', 'click', importWordDict);
   on('.js-add-dict-entry', 'click', () => openDictEntryModal(null));
+  on('.js-list-dict',      'click', openDictListModal);
+  on('.js-export-dict',    'click', exportWordDict);
+  on('.js-import-dict',    'click', importWordDict);
   on('.js-save-minutes-mode', 'click', () => {
     const val = document.getElementById('minutesModeSelect')?.value;
     if (!val) return;
@@ -768,8 +810,6 @@ function bind() {
     go('home');
   });
 
-  // 設定画面：辞書テーブル初期表示
-  renderWordDictTable();
 }
 
 function on(sel, ev, fn) {
@@ -871,12 +911,37 @@ async function handleBack() {
 
 // ── New meeting modal ─────────────────────────────────────────────────────────
 function openNewMeetingModal() {
+  const curInterval = localStorage.getItem('chunkInterval') || '60';
+  const curGain     = localStorage.getItem('micGain') || '3';
+  const curFilter   = localStorage.getItem('filterPreset') || 'off';
+
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
     <div class="modal">
       <div class="modal-heading">新しい会議</div>
       <input type="text" class="input" id="modalTitleInput" placeholder="会議タイトル（例：週次定例）" maxlength="80">
+      <div class="modal-setting-row">
+        <label class="modal-setting-label">文字起こし間隔</label>
+        <select id="modalChunkInterval" class="input modal-setting-select">
+          ${[['30','30秒'],['60','1分'],['120','2分'],['300','5分']].map(
+            ([v,l]) => `<option value="${v}"${v===curInterval?' selected':''}>${l}</option>`).join('')}
+        </select>
+      </div>
+      <div class="modal-setting-row">
+        <label class="modal-setting-label">マイク感度</label>
+        <select id="modalMicGain" class="input modal-setting-select">
+          ${[['1','×1 標準'],['2','×2'],['3','×3 推奨'],['4','×4'],['5','×5 最大']].map(
+            ([v,l]) => `<option value="${v}"${v===curGain?' selected':''}>${l}</option>`).join('')}
+        </select>
+      </div>
+      <div class="modal-setting-row">
+        <label class="modal-setting-label">フィルター</label>
+        <select id="modalFilterPreset" class="input modal-setting-select">
+          ${[['off','オフ'],['standard','標準'],['conference','会議室'],['phone','電話品質']].map(
+            ([v,l]) => `<option value="${v}"${v===curFilter?' selected':''}>${l}</option>`).join('')}
+        </select>
+      </div>
       <div class="modal-actions">
         <button class="btn btn-ghost" id="modalCancel">キャンセル</button>
         <button class="btn btn-primary" id="modalConfirm">🎙&ensp;録音へ</button>
@@ -888,15 +953,25 @@ function openNewMeetingModal() {
   input.focus();
 
   const close = () => overlay.remove();
-  const confirm = () => { close(); createMeeting(input.value.trim()); };
+  const confirm = () => {
+    const settings = {
+      chunkInterval: overlay.querySelector('#modalChunkInterval').value,
+      micGain:       overlay.querySelector('#modalMicGain').value,
+      filterPreset:  overlay.querySelector('#modalFilterPreset').value,
+    };
+    close();
+    createMeeting(input.value.trim(), settings);
+  };
 
   overlay.querySelector('#modalCancel').addEventListener('click', close);
   overlay.querySelector('#modalConfirm').addEventListener('click', confirm);
   overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
-  input.addEventListener('keydown', e => { if (e.key === 'Enter') confirm(); });
 }
 
-async function createMeeting(title) {
+async function createMeeting(title, settings = {}) {
+  if (settings.chunkInterval) localStorage.setItem('chunkInterval', settings.chunkInterval);
+  if (settings.micGain)       localStorage.setItem('micGain', settings.micGain);
+  if (settings.filterPreset)  localStorage.setItem('filterPreset', settings.filterPreset);
   const meeting = {
     id: uid(),
     title: title || '無題の会議',
@@ -1293,6 +1368,45 @@ async function autoSave() {
   S.currentMeeting.transcript = [...S.rec.segments];
   S.currentMeeting.rawSegments = [...S.rec.rawSegments];
   await putMeeting(S.currentMeeting).catch(() => {});
+}
+
+// ── Generate with mode modal ──────────────────────────────────────────────────
+function generateWithModeModal(meeting) {
+  const curMode = getMode();
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="modal-heading">議事録を生成</div>
+      <div class="mode-options">
+        ${MODES.map(m => `
+          <label class="mode-option">
+            <input type="radio" name="genMode" value="${m.id}"${m.id===curMode?' checked':''}>
+            <div class="mode-option-body">
+              <strong>${m.label}</strong>
+              <span>${m.id==='standard'?'サマリ＋アクション＋トピック別要点':m.id==='simple'?'サマリのみ（詳しめ）':'サマリ＋アクション＋決定事項'}</span>
+            </div>
+          </label>`).join('')}
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="genModalCancel">キャンセル</button>
+        <button class="btn btn-primary" id="genModalConfirm">📝&ensp;生成する</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  const go = () => {
+    const sel = overlay.querySelector('input[name="genMode"]:checked');
+    if (sel) localStorage.setItem('minutesMode', sel.value);
+    close();
+    doGenerate(meeting);
+  };
+
+  overlay.querySelector('#genModalCancel').addEventListener('click', close);
+  overlay.querySelector('#genModalConfirm').addEventListener('click', go);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
 }
 
 // ── Gemini API ───────────────────────────────────────────────────────────────
